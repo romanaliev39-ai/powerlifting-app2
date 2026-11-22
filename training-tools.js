@@ -79,6 +79,50 @@
       row(name, show(value.sets) + ' подх. · ' + show(value.reps) + ' повт. · ' + show(value.kg, 'кг')))];
   }
 
+  const lifts = [['squat','Присед'],['bench','Жим'],['dead','Тяга']];
+  const ipfFormats = ['Классическое троеборье','Экипировочное троеборье','Классический жим','Экипировочный жим'];
+  const ipfCoefficients = {
+    Мужская: [[1199.72839,1025.18162,.00921],[1236.25115,1449.21864,.01644],[320.98041,281.40258,.01008],[381.22073,733.79378,.02398]],
+    Женская: [[610.32796,1045.59282,.03048],[758.63878,949.31382,.02435],[142.40398,442.52671,.04724],[221.82209,357.00377,.02937]]
+  };
+  const attemptStatuses = ['Запланирован','Зачёт','Незачёт'];
+  function ipfGl({ sex, format, body, total }) {
+    const [a,b,c] = ipfCoefficients[sex][ipfFormats.indexOf(format)];
+    const divisor = a - b * Math.exp(-c * body);
+    if(!(divisor > 0)) throw new Error('Проверьте массу тела и формат.');
+    return [row('IPF GL', show(100 * total / divisor) + ' балла')];
+  }
+  function competitionResult(values) {
+    let projectedTotal = 0, acceptedTotal = 0;
+    let projectedLifts = 0, acceptedLifts = 0;
+    const results = [];
+    for(const [key, name] of lifts) {
+      const attempts = [1,2,3].map(n => ({kg:values[key+n], status:values[key+n+'status'] || 'Запланирован'}));
+      for(const attempt of attempts) {
+        if(attempt.status !== 'Запланирован' && !(attempt.kg > 0)) {
+          throw new Error('Укажите вес для отмеченного зачёта или незачёта.');
+        }
+      }
+      const projected = Math.max(0, ...attempts.filter(a => a.status !== 'Незачёт' && a.kg > 0).map(a => a.kg));
+      const accepted = Math.max(0, ...attempts.filter(a => a.status === 'Зачёт').map(a => a.kg));
+      if(projected){ projectedLifts++; projectedTotal += projected; }
+      if(accepted){ acceptedLifts++; acceptedTotal += accepted; }
+      results.push(row(name, 'в зачёте ' + (accepted ? show(accepted,'кг') : '—') + ' · возможный результат ' + (projected ? show(projected,'кг') : '—')));
+      const opener = attempts[0].kg;
+      if(opener > 0) {
+        const bar = values.bar, step = values.warmupStep;
+        const warmup = [...new Set([bar, ...[.4,.6,.75,.87].map(p=>bar + Math.round((opener*p-bar)/step)*step)])]
+          .filter(kg=>kg>=bar && kg<opener).sort((a,b)=>a-b);
+        if(warmup.length) results.push(row('Разминка · '+name, warmup.map(kg=>show(kg,'кг')).join(' → ')));
+      }
+    }
+    return [
+      row('Зачётная сумма', acceptedLifts === 3 ? show(acceptedTotal,'кг') : 'нужен зачёт во всех трёх движениях'),
+      row('Возможная сумма', projectedLifts === 3 ? show(projectedTotal,'кг') : 'укажите попытку в каждом движении'),
+      ...results
+    ];
+  }
+
   const groups = [
     {
       title: 'Силовая подготовка',
@@ -162,6 +206,26 @@
     }
   ];
 
+  groups.push(
+    {title:'История тренировок',tools:[
+      {id:'strength-history',title:'График силы',hint:'Лучшая оценка 1ПМ за тренировку по формуле Эпли. Учитываются записанные подходы до 10 повторений.',render:renderStrengthHistory},
+      {id:'compare-weeks',title:'Сравнение недель',hint:'Сравните две календарные недели с понедельника по воскресенье.',render:renderWeekComparison}
+    ]},
+    {title:'Соревнования',tools:[
+      {id:'meet-planner',title:'Планировщик соревнований',hint:'Запишите веса и статусы попыток. Разминка показана как пример весов до первой попытки.',
+        source:'https://www.powerlifting.sport/rules/codes/info/technical-rules',
+        fields:[number('bar','Вес грифа, кг',20,0.25,100),number('warmupStep','Шаг веса для разминки, кг',2.5,.25,20),
+          ...lifts.flatMap(([key, name])=>[1,2,3].flatMap(n=>[
+          {...number(key+n,name+' · попытка '+n+', кг','',0.25),optional:true},
+          select(key+n+'status','Статус попытки '+n,attemptStatuses)
+        ]))],calculate:competitionResult},
+      {id:'ipf-gl',title:'Очки IPF GL',hint:'Введите вес тела и зачётную сумму троеборья или результат отдельного жима.',
+        source:'https://www.powerlifting.sport/rules/codes/info/ipf-formula',
+        fields:[select('sex','Категория',['Мужская','Женская']),select('format','Формат',ipfFormats),
+          number('body','Вес тела, кг','',30,350),number('total','Зачётный результат, кг','',0.25,2000)],calculate:ipfGl}
+    ]}
+  );
+
   function element(tag, text) {
     const node = document.createElement(tag);
     if (text) node.textContent = text;
@@ -192,12 +256,22 @@
       back.type = 'button';
       back.addEventListener('click', () => open());
       content.append(back, element('h3', tool.title), element('p', tool.hint));
+      if (tool.render) tool.render(content);
+      else renderCalculator(content, tool, initial);
+    }
+    if (!dialog.open) dialog.showModal();
+    content.querySelector('h3')?.setAttribute('tabindex', '-1');
+    content.querySelector('h3')?.focus();
+  }
+
+  function renderCalculator(content, tool, initial) {
+      const id = tool.id;
       const form = element('form');
       for (const f of tool.fields) {
         const label = element('label', f.label);
         const input = element(f.options ? 'select' : f.multiline ? 'textarea' : 'input');
         input.name = f.name;
-        input.required = !f.femaleOnly;
+        input.required = !f.femaleOnly && !f.optional;
         if (f.options) {
           for (const option of f.options) input.append(element('option', option));
         } else if (f.multiline) {
@@ -261,10 +335,190 @@
         link.rel = 'noopener noreferrer';
         content.append(link);
       }
+  }
+
+  function historyForTool(content) {
+    const history = window.getTrainingToolHistory?.();
+    if (!history) {
+      content.append(element('p', 'Откройте «Аналитика», выберите спортсмена и снова откройте инструмент.'));
+      return null;
     }
-    if (!dialog.open) dialog.showModal();
-    content.querySelector('h3')?.setAttribute('tabindex', '-1');
-    content.querySelector('h3')?.focus();
+    content.append(element('p', history.name));
+    return history.sets;
+  }
+
+  const hasLoad = set => Number.isFinite(set.kg) && set.kg >= 0 && Number.isInteger(set.reps) && set.reps > 0;
+  const hasDate = set => Number.isFinite(set.performedAt) && set.performedAt > 0;
+  const shortDate = new Intl.DateTimeFormat('ru-RU',{day:'2-digit',month:'2-digit',year:'numeric'});
+  function dateValue(timestamp) {
+    const d = new Date(timestamp);
+    return [d.getFullYear(), String(d.getMonth()+1).padStart(2,'0'), String(d.getDate()).padStart(2,'0')].join('-');
+  }
+  function labeledControl(parent, title, control) {
+    const label = element('label', title);
+    label.append(control);
+    parent.append(label);
+  }
+  function makeHistoryTable(title, columns, rows) {
+    const table = element('table');
+    table.className = 'training-history-table';
+    if(title) table.append(element('caption',title));
+    const head = element('thead'), header = element('tr'), body = element('tbody');
+    columns.forEach(column => {
+      const th = element('th',column);
+      th.scope = 'col';
+      header.append(th);
+    });
+    head.append(header);
+    rows.forEach(values => {
+      const tr = element('tr');
+      values.forEach(value => {
+        const td = element('td');
+        if(typeof value === 'string') td.textContent = value;
+        else td.append(value);
+        tr.append(td);
+      });
+      body.append(tr);
+    });
+    table.append(head,body);
+    return table;
+  }
+  function strengthPoints(sets, exercise) {
+    const points = new Map();
+    for(const set of sets) {
+      if(set.exercise !== exercise || set.estimated || !hasLoad(set) || !hasDate(set) || set.kg <= 0 || set.reps > 10) continue;
+      const day = dateValue(set.performedAt);
+      const key = set.workoutId + '|' + day;
+      const value = epley(set.kg,set.reps);
+      if(!points.has(key) || points.get(key).value < value) points.set(key,{...set,value});
+    }
+    return [...points.values()].sort((a,b)=>a.performedAt-b.performedAt);
+  }
+  function strengthChart(points, activate) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg','svg');
+    svg.setAttribute('viewBox','0 0 540 185');
+    svg.setAttribute('aria-label','График расчётного 1ПМ. Подходы доступны в таблице ниже.');
+    svg.setAttribute('role','img');
+    svg.classList.add('training-history-chart');
+    function add(tag, attributes, label) {
+      const node = document.createElementNS(svg.namespaceURI,tag);
+      Object.entries(attributes).forEach(([key,value])=>node.setAttribute(key,value));
+      if(label) node.textContent = label;
+      svg.append(node);
+      return node;
+    }
+    const min = Math.min(...points.map(p=>p.value)), max = Math.max(...points.map(p=>p.value));
+    const lower = Math.max(0, Math.floor(min/5)*5-5), upper = Math.ceil(max/5)*5+5;
+    const start = points[0].performedAt, end = points[points.length-1].performedAt;
+    const x = p => start === end ? 282 : 55 + (p.performedAt-start)/(end-start)*468;
+    const y = value => 153 - (value-lower)/(upper-lower)*126;
+    [lower,(lower+upper)/2,upper].forEach(value=>{
+      add('line',{x1:54,x2:526,y1:y(value),y2:y(value),stroke:'currentColor',opacity:'.2'});
+      add('text',{x:4,y:y(value)+4,fill:'currentColor','font-size':12},show(value,'кг'));
+    });
+    add('polyline',{points:points.map(p=>x(p)+','+y(p.value)).join(' '),fill:'none',stroke:'var(--accent, #e44)', 'stroke-width':3});
+    points.forEach(p=> {
+      const dot = add('circle',{cx:x(p),cy:y(p.value),r:5,fill:'var(--accent, #e44)',style:'cursor:pointer'});
+      dot.addEventListener('click',()=>activate(p));
+    });
+    return svg;
+  }
+  function renderStrengthHistory(content) {
+    const sets = historyForTool(content);
+    if(!sets) return;
+    const exercises = [...new Set(sets.filter(s=>!s.estimated && hasDate(s) && hasLoad(s) && s.kg > 0 && s.reps <= 10).map(s=>s.exercise))];
+    if(!exercises.length) {
+      content.append(element('p','Пока нет сохранённых подходов с весом и 1–10 повторениями.'));
+      return;
+    }
+    const controls = element('div'), selector = element('select'), result = element('div');
+    controls.className = 'training-history-controls';
+    exercises.sort((a,b)=>a.localeCompare(b,'ru')).forEach(name=>selector.append(element('option',name)));
+    labeledControl(controls,'Упражнение',selector);
+    content.append(controls,result);
+    function render() {
+      const points = strengthPoints(sets,selector.value);
+      const detail = element('p');
+      detail.className = 'training-history-detail';
+      detail.setAttribute('aria-live','polite');
+      function activate(point) {
+        detail.textContent = point.workoutTitle + ' · подход ' + (point.index+1) + ' · ' + show(point.kg,'кг') + ' × ' + point.reps +
+          (point.rpe != null ? ' · RPE ' + show(point.rpe) : '') + ' · расчётный 1ПМ ' + show(point.value,'кг');
+      }
+      const rows = points.map(point=>{
+        const button = element('button','Подход '+(point.index+1));
+        button.type = 'button';
+        button.addEventListener('click',()=>activate(point));
+        return [shortDate.format(point.performedAt),show(point.value,'кг'),button];
+      });
+      result.replaceChildren(strengthChart(points,activate),detail,makeHistoryTable('', ['Дата','Расчётный 1ПМ','Подход'],rows));
+      activate(points[points.length-1]);
+    }
+    selector.addEventListener('change',render);
+    render();
+  }
+
+  function weekBounds(value) {
+    if(!value) return null;
+    const start = new Date(value+'T00:00:00');
+    if(!Number.isFinite(+start)) return null;
+    start.setDate(start.getDate()-(start.getDay()+6)%7);
+    const end = new Date(start);
+    end.setDate(end.getDate()+7);
+    return [start,end];
+  }
+  function summarizeWeek(sets, bounds) {
+    const result = new Map();
+    if(!bounds) return result;
+    for(const set of sets) {
+      if(!hasDate(set) || set.performedAt < +bounds[0] || set.performedAt >= +bounds[1]) continue;
+      const group = result.get(set.exercise) || {kg:0,count:0,unknown:0,estimated:0,best:null};
+      if(hasLoad(set)) {
+        group.kg += set.kg * set.reps;
+        group.count++;
+        if(set.estimated) group.estimated++;
+        if(!group.best || set.kg > group.best.kg || (set.kg === group.best.kg && set.reps > group.best.reps)) group.best = set;
+      }else group.unknown++;
+      result.set(set.exercise,group);
+    }
+    return result;
+  }
+  function renderWeekComparison(content) {
+    const sets = historyForTool(content);
+    if(!sets) return;
+    const controls = element('div'), first = element('input'), second = element('input'), result = element('div');
+    const undated = sets.filter(set=>!hasDate(set)).length;
+    if(undated) content.append(element('p','Без даты выполнения: '+undated+'. Эти подходы не входят в календарное сравнение.'));
+    const latest = sets.reduce((max,set)=>hasDate(set)?Math.max(max,set.performedAt):max,0);
+    const previous = new Date(latest || Date.now());
+    previous.setDate(previous.getDate()-7);
+    first.type = second.type = 'date';
+    first.value = dateValue(+previous);
+    second.value = dateValue(latest || Date.now());
+    controls.className = 'training-history-controls';
+    labeledControl(controls,'Дата в первой неделе',first);
+    labeledControl(controls,'Дата во второй неделе',second);
+    content.append(controls,result);
+    if(sets.some(set=>set.estimated)) content.append(element('p','Расчётные подходы из старых отчётов сгруппированы по дате сохранения.'));
+    const metric = g => !g ? '—' : (g.count ? show(g.kg,'кг') : '—') + ' · подходов: ' + g.count +
+      (g.best ? ' · макс. ' + show(g.best.kg,'кг') + ' × ' + g.best.reps : '') +
+      (g.estimated ? ' · расчётных: ' + g.estimated : '') + (g.unknown ? ' · без данных: ' + g.unknown : '');
+    function render(){
+      const boundsA=weekBounds(first.value), boundsB=weekBounds(second.value);
+      if(!boundsA || !boundsB){ result.replaceChildren(element('p','Выберите обе даты.'));return; }
+      const a=summarizeWeek(sets,boundsA), b=summarizeWeek(sets,boundsB);
+      const names=[...new Set([...a.keys(),...b.keys()])].sort((x,y)=>x.localeCompare(y,'ru'));
+      if(!names.length){ result.replaceChildren(element('p','В этих неделях нет датированных подходов.')); return; }
+      const total = m => [...m.values()].reduce((t,g)=>({kg:t.kg+g.kg,count:t.count+g.count,estimated:t.estimated+g.estimated,unknown:t.unknown+g.unknown}),{kg:0,count:0,estimated:0,unknown:0});
+      function comparison(name,x,y) {
+        const delta = x?.count && y?.count ? y.kg-x.kg : null;
+        return [name, metric(x), metric(y), delta === null ? '—' : (delta>0?'+':'')+show(delta,'кг')];
+      }
+      result.replaceChildren(makeHistoryTable('Сравнение нагрузки',['Упражнение',shortDate.format(boundsA[0]),shortDate.format(boundsB[0]),'Разница'],
+        [comparison('Всего',total(a),total(b)),...names.map(name=>comparison(name,a.get(name),b.get(name)))]));
+    }
+    [first,second].forEach(input=>input.addEventListener('change',render));
+    render();
   }
 
   const dialog = document.getElementById('training-tools-dialog');

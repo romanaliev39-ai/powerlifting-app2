@@ -446,6 +446,14 @@ h2{font-size:18px;margin:28px 0 14px;padding-left:14px;border-left:4px solid var
 .plan-fact-table th,.plan-fact-table td{text-align:left;padding:6px 4px;border-bottom:1px solid var(--border);vertical-align:top}
 .plan-fact-table .plan-fact-difference{background:var(--input-bg);box-shadow:inset 3px 0 var(--accent)}
 .plan-fact-table small{display:block;color:var(--text-muted);margin-top:3px}
+
+.training-history-controls{display:flex;flex-wrap:wrap;gap:10px;margin:12px 0}
+.training-history-controls label{min-width:min(220px,100%)}
+.training-history-chart{width:100%;height:auto;color:var(--text);display:block;margin:10px 0}
+.training-history-table{width:100%;border-collapse:collapse;text-align:left;font-size:13px;overflow-wrap:anywhere}
+.training-history-table th,.training-history-table td{padding:6px;border-bottom:1px solid var(--border);vertical-align:top}
+.training-history-table caption{text-align:left;font-weight:800;padding:8px 0}
+.training-history-detail{margin:8px 0;color:var(--text)}
 </style>
 </head>
 <body>
@@ -457,7 +465,7 @@ h2{font-size:18px;margin:28px 0 14px;padding-left:14px;border-left:4px solid var
     <div class="logo">🏋️</div>
     <h2>Вход в личный кабинет</h2>
     <p>Введите ваш PIN-код, чтобы загрузить<br>свои 1ПМ и тренировки.</p>
-    <input type="password" id="pin-input" maxlength="128" placeholder="PIN или пароль тренера" autocomplete="off" enterkeyhint="go" autocorrect="off" autocapitalize="off" spellcheck="false">
+    <input type="password" id="pin-input" inputmode="numeric" maxlength="128" placeholder="PIN или пароль тренера" autocomplete="off" enterkeyhint="go" autocorrect="off" autocapitalize="off" spellcheck="false">
     <button type="submit" id="login-btn">Войти</button>
     <div class="login-error" id="login-error"></div>
     <div id="login-info"></div>
@@ -4321,7 +4329,9 @@ function renderAnalytics(){
     '<button type="button" data-load-period="month">Месяц</button>' +
     '<button type="button" data-load-period="cycle">Цикл</button></div>' +
     '<label class="load-period-date">Дата в периоде <input type="date"></label>' +
-    '<div class="load-period-result" aria-live="polite"></div></section>';
+    '<div class="load-period-result" aria-live="polite"></div>' +
+    '<div class="load-periods"><button type="button" data-training-tools="strength-history">График силы</button>' +
+    '<button type="button" data-training-tools="compare-weeks">Сравнить недели</button></div></section>';
   html += '<div style="font-size:16px;font-weight:900;margin:20px 0 12px;">Детализация по дням</div>';
   WORKOUTS.forEach(function(w){
     try{
@@ -4436,6 +4446,36 @@ function coachTrainingLoadItems(user, workout, entry, submittedAt){
     });
     return [id, Object.assign({}, item, {loads:loads})];
   }));
+}
+function getTrainingToolHistory(){
+  var user = currentUser;
+  if(isAdmin){
+    var pin = document.getElementById('analytics-athlete-select')?.value;
+    user = USERS.find(function(candidate){ return String(candidate.pin) === pin; });
+  }
+  if(!user) return null;
+  var history = [];
+  var data = getAthleteData(user.pin);
+  getWorkoutsForUser(user).forEach(function(workout){
+    var entry = data[workout.id];
+    if(!entry) return;
+    var items = coachTrainingLoadItems(user, workout, entry, CLOUD_SUBMISSIONS[user.pin]?.ts);
+    (workout.blocks || []).forEach(function(block){
+      (block.items || []).forEach(function(item){
+        var progress = items[item.id];
+        if(item.type !== 'percent' || !Array.isArray(progress?.sets)) return;
+        new Set(progress.sets).forEach(function(index){
+          var load = progress.loads?.[index];
+          history.push({
+            workoutId:workout.id, workoutTitle:workout.title, lift:item.lift, exercise:item.name,
+            index:Number(index), kg:load?.kg, reps:load?.reps, rpe:load?.rpe,
+            performedAt:load?.performedAt, estimated:Boolean(load?.estimated)
+          });
+        });
+      });
+    });
+  });
+  return {name:user.name, sets:history};
 }
 function renderCoachDayLoad(user, workout, entry){
   var day = getWorkoutForUser(user, workout.id) || workout;
