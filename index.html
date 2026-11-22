@@ -690,7 +690,10 @@ h2{font-size:18px;margin:28px 0 14px;padding-left:14px;border-left:4px solid var
         <div style="font-size:15px;font-weight:900;">📨 Кто прислал обратную связь</div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
           <span id="analytics-submissions-summary" style="font-size:12px;color:var(--text-muted);font-weight:700;"></span>
+          <label for="analytics-access-code">Код облачной аналитики</label>
+          <input id="analytics-access-code" type="password" autocomplete="off" spellcheck="false">
           <button class="admin-cloud-btn" onclick="adminPullAnalyticsCloud()" style="font-size:12px;padding:7px 12px;margin:0;">⬇️ Обновить из облака</button>
+          <span id="analytics-cloud-status" role="status" aria-live="polite"></span>
         </div>
       </div>
       <div class="submissions-grid" id="analytics-submissions"></div>
@@ -2373,6 +2376,10 @@ function updateCloudStatus(){
 }
 function logout(){
   analyticsAccessCode = '';
+  var analyticsCodeField = document.getElementById('analytics-access-code');
+  if(analyticsCodeField) analyticsCodeField.value = '';
+  var analyticsStatus = document.getElementById('analytics-cloud-status');
+  if(analyticsStatus) analyticsStatus.textContent = '';
   if(currentUser && !isAdmin){
     try{ saveAllNow(); }catch(e){}
     try{ studentPushProgress(false).catch(function(){}); }catch(e){}
@@ -4156,14 +4163,24 @@ function renderAnalytics(){
   container.innerHTML = html;
 }
 async function adminPullAnalyticsCloud(){
+  var field = document.getElementById('analytics-access-code');
+  var status = document.getElementById('analytics-cloud-status');
+  analyticsAccessCode = field.value.trim() || analyticsAccessCode;
   if(!analyticsAccessCode){
-    analyticsAccessCode = (prompt('Введите код доступа к облачной аналитике') || '').trim();
-    if(!analyticsAccessCode) return;
+    status.textContent = 'Введите код доступа к облачной аналитике.';
+    field.focus();
+    return;
   }
-  showToast('Загрузка...', 'info');
-  var r = await fetchCloudProgressOnly();
-  if(r.ok){ showToast('Обновлено'); renderAnalytics(); updateCloudStatus(); }
-  else{ alert('Не удалось.\n\n' + r.error); showToast('Ошибка', 'error'); }
+  status.textContent = 'Загружаем отзывы из облака…';
+  var result = await fetchCloudProgressOnly();
+  if(result.ok){
+    field.value = '';
+    status.textContent = 'Отзывы обновлены из облака.';
+    renderAnalytics();
+    updateCloudStatus();
+  }else{
+    status.textContent = result.error;
+  }
 }
 
 (function initAll(){

@@ -66,8 +66,11 @@ export function createHandler({ openStore, readLegacy, adminPin }) {
     }
     const { action, pin: provided, progress, stats } = object(body);
     const pin = normalizePin(provided);
+    if (action === 'list' && !adminPin) {
+      return response({ error: 'Код облачной аналитики не настроен в Netlify' }, 503);
+    }
     if (action === 'list' && !samePin(String(provided ?? '').trim(), adminPin)) {
-      return response({ error: 'Требуется доступ тренера' }, 403);
+      return response({ error: 'Неверный код облачной аналитики' }, 403);
     }
     if (!['list','save','stats'].includes(action)) return response({ error: 'Неизвестное действие' }, 400);
     let stage = 'legacy-read';
