@@ -404,6 +404,25 @@ h2{font-size:18px;margin:28px 0 14px;padding-left:14px;border-left:4px solid var
 .ref-grid{grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px}
 .ref-card .ref-thumb{height:110px}
 }
+
+#training-tools-dialog{width:min(680px,calc(100% - 24px));max-height:85dvh;padding:20px;color:var(--text);background:var(--card);border:1px solid var(--border);border-radius:16px;box-shadow:0 20px 60px #0004}
+#training-tools-dialog::backdrop{background:#0b132480}
+#training-tools-dialog header{display:flex;align-items:center;justify-content:space-between;gap:12px}
+#training-tools-dialog h2,#training-tools-dialog h3{margin:0 0 12px}
+#training-tools-dialog p{margin:0 0 12px;line-height:1.5}
+#training-tools-dialog button{border:1px solid var(--border);border-radius:8px;background:var(--input-bg);color:var(--text);font:inherit;font-weight:700;padding:9px 12px;cursor:pointer}
+#training-tools-dialog button[type=submit]{background:var(--accent);color:#fff;border-color:transparent}
+.training-tools-content{margin-top:16px}
+.training-tools-content>button,.training-tools-grid{margin-bottom:16px}
+.training-tools-grid,.training-tools-content form{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,175px),1fr));gap:10px}
+.training-tools-content label{display:grid;gap:5px;font-size:14px;font-weight:700}
+.training-tools-content label[hidden]{display:none}
+.training-tools-content label:has(textarea){grid-column:1/-1}
+.training-tools-content input,.training-tools-content select,.training-tools-content textarea{width:100%;min-width:0;border:1px solid var(--border);background:var(--input-bg);color:var(--text);border-radius:8px;padding:9px;font:inherit}
+.training-tools-content output:not(:empty){display:block;padding:14px;margin-top:14px;background:var(--input-bg);border-radius:8px;overflow-wrap:anywhere}
+.training-tools-content output p:last-child{margin-bottom:0}
+.training-tools-content a{display:inline-block;margin-top:12px;color:var(--accent)}
+.set .training-plate-weight{background:transparent;border:0;padding:0;font-family:inherit;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:3px;cursor:pointer}
 </style>
 </head>
 <body>
@@ -652,6 +671,7 @@ h2{font-size:18px;margin:28px 0 14px;padding-left:14px;border-left:4px solid var
     <button class="admin-tab" data-admin-tab="analytics">📊 Аналитика</button>
     <button class="admin-tab" data-admin-tab="history">📜 История</button>
     <button class="admin-tab" data-admin-tab="cloud">☁️ Облако</button>
+    <button class="admin-tab" type="button" data-training-tools>Инструменты</button>
   </div>
 
   <div class="admin-panel active" id="admin-panel-users">
@@ -730,6 +750,7 @@ h2{font-size:18px;margin:28px 0 14px;padding-left:14px;border-left:4px solid var
   <div class="user-badge">
     <span class="name" id="user-name">—</span>
     <button class="btn-icon" id="refresh-btn" title="Обновить с базы" onclick="studentPullCloud()">🔄</button>
+    <button class="logout" type="button" data-training-tools>Инструменты</button>
     <button class="logout" id="logout-btn">Выйти</button>
   </div>
   <div class="hero" id="hero">
@@ -2791,6 +2812,14 @@ function renderItemStudent(it){
         }
       }
       set.innerHTML = '<button type="button" class="set-edit" title="Изменить подход">✏️</button><span class="pct">' + pctLabel + '</span><span class="kg">' + kgDisplay + '</span><span class="reps">× ' + displayReps + '</span>';
+      var weightLabel = set.querySelector('.kg');
+      var weightButton = document.createElement('button');
+      weightButton.type = 'button';
+      weightButton.className = 'kg training-plate-weight';
+      weightButton.dataset.trainingTools = 'plates';
+      weightButton.title = 'Подобрать блины';
+      weightButton.textContent = weightLabel.textContent;
+      weightLabel.replaceWith(weightButton);
       if(edit){
         var ttl = 'План: ' + effPct + '% (' + (rm ? Math.round(rm * effPct / 100 * 2) / 2 + ' кг' : '—') + ') × ' + s.reps;
         ttl += '\nФакт: ' + displayPct + '% (' + (displayKg != null ? displayKg + ' кг' : '—') + ') × ' + displayReps;
@@ -2798,7 +2827,7 @@ function renderItemStudent(it){
         set.title = ttl;
       }
       set.addEventListener('click', function(e){
-        if(e.target.closest && e.target.closest('.set-edit')) return;
+        if(e.target.closest && e.target.closest('.set-edit, .training-plate-weight')) return;
         if(isWorkoutLocked()) return;
         set.classList.toggle('done');
         saveCheckState();
@@ -2938,6 +2967,43 @@ function getRM(lift){
 }
 
 function progressKeyFor(dayId){ return storageKey('progress_' + dayId); }
+function getTrainingVolumeRows(){
+  if(!currentUser || isAdmin || !currentId) return [];
+  var selected = getWorkoutForUser(currentUser, currentId);
+  if(!selected) return [];
+  var rows = [];
+  WORKOUTS.filter(function(workout){ return String(workout.week) === String(selected.week); }).forEach(function(workout){
+    var day = getWorkoutForUser(currentUser, workout.id);
+    if(!day) return;
+    var state;
+    try{ state = JSON.parse(localStorage.getItem(progressKeyFor(day.id)) || '{}'); }catch(e){ return; }
+    (day.blocks || []).forEach(function(block){
+      (block.items || []).forEach(function(item){
+        if(item.type !== 'percent') return;
+        var progress = state.items && state.items[item.id];
+        if(!progress || !Array.isArray(progress.sets)) return;
+        var edits = loadSetEdits(day.id, item.id);
+        var adjustment = loadAdjustForItem(day.id, item.id);
+        var rm = getRM(item.lift);
+        progress.sets.forEach(function(index){
+          var set = (item.sets || [])[index];
+          if(!set) return;
+          var edit = edits[index] || {};
+          var reps = Number(edit.reps == null ? set.reps : edit.reps);
+          var percent = edit.pct == null
+            ? Math.round(set.pct * (1 - adjustment / 100) * 2) / 2
+            : edit.pct;
+          var kg = edit.kg == null && rm ? Math.round(rm * percent / 100 * 2) / 2 : Number(edit.kg);
+          if(set.pctMax && edit.kg == null && edit.pct == null) return;
+          if(!Number.isInteger(reps) || reps < 1 || !(kg > 0) || !Number.isFinite(kg)) return;
+          var name = String(item.name || 'Упражнение').replace(/[;\r\n]+/g, ' ');
+          rows.push([name, 1, reps, kg].join('; '));
+        });
+      });
+    });
+  });
+  return rows;
+}
 function getDayProgress(dayId){
   try{
     var key = progressKeyFor(dayId);
@@ -4219,5 +4285,13 @@ async function adminPullAnalyticsCloud(){
 })();
 </script>
 
+<dialog id="training-tools-dialog" aria-labelledby="training-tools-title">
+  <header>
+    <h2 id="training-tools-title">Инструменты</h2>
+    <form method="dialog"><button type="submit">Закрыть</button></form>
+  </header>
+  <div class="training-tools-content"></div>
+</dialog>
+<script src="training-tools.js" defer></script>
 </body>
 </html>
