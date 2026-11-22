@@ -1,0 +1,133 @@
+import { getStore } from '@netlify/blobs';
+import { createHash, timingSafeEqual } from 'node:crypto';
+
+function normalizePin(value) {
+  return String(value ?? '').replace(/[^0-9]/g, '');
+}
+
+function samePin(provided, expected) {
+  if (!provided || !expected) return false;
+  const digest = value => createHash('sha256').update(value).digest();
+  return timingSafeEqual(digest(provided), digest(expected));
+}
+
+function response(value, status = 200) {
+  return Response.json(value, { status, headers: { 'Cache-Control': 'no-store' } });
+}
+
+function object(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function mergeDays(oldDays, newDays) {
+  const days = { ...oldDays };
+  for (const [id, day] of Object.entries(object(newDays))) {
+    if (!/^[a-z0-9_-]{1,100}$/i.test(id) || id === '__proto__' || !day || typeof day !== 'object' || Array.isArray(day)) continue;
+    const previous = days[id];
+    if (previous && Number(previous.savedAt || 0) > Number(day?.savedAt || 0)) continue;
+    days[id] = day;
+  }
+  return days;
+}
+
+function mergeStats(oldStats, newStats) {
+  const previous = object(oldStats);
+  const incoming = object(newStats);
+  const merged = {};
+  for (const key of ['opens','dayOpens','pushes','lastSeen']) {
+    merged[key] = Math.max(Number(previous[key]) || 0, Number(incoming[key]) || 0);
+  }
+  merged.firstSeen = Math.min(Number(previous.firstSeen) || Infinity,
+    Number(incoming.firstSeen) || Infinity, Date.now());
+  return merged;
+}
+
+function summarize(progress) {
+  const days = Object.values(progress);
+  return {
+    daysCount: days.length,
+    commentCount: days.filter(day => day?.comment?.text).length,
+    rpeCount: days.filter(day => day?.comment?.rpe).length,
+    adjustCount: days.filter(day => day?.adjust).length,
+    setEditCount: days.filter(day => Object.keys(object(day?.setEdits)).length).length,
+  };
+}
+
+export function createHandler({ openStore, readLegacy, adminPin }) {
+  return async function handler(request) {
+    if (request.method !== 'POST') return response({ error: 'Метод не поддерживается' }, 405);
+    let body;
+    try {
+      const text = await request.text();
+      if (text.length > 500_000) return response({ error: 'Слишком большой объём данных ученика' }, 413);
+      body = JSON.parse(text);
+    } catch {
+      return response({ error: 'Некорректные данные' }, 400);
+    }
+    const { action, pin: provided, progress, stats } = object(body);
+    const pin = normalizePin(provided);
+    if (action === 'list' && !samePin(String(provided ?? '').trim(), adminPin)) {
+      return response({ error: 'Требуется доступ тренера' }, 403);
+    }
+    if (!['list','save','stats'].includes(action)) return response({ error: 'Неизвестное действие' }, 400);
+    try {
+      const legacy = await readLegacy();
+      const users = legacy.users;
+      if (!Array.isArray(users)) throw new Error('Missing users');
+      const store = openStore();
+      if (action === 'list') {
+        const allProgress = { ...object(legacy.progress) };
+        const submissions = { ...object(legacy.submissions) };
+        await Promise.all(users.map(async user => {
+          const key = normalizePin(user.pin);
+          if (!key) return;
+          const entry = await store.get(key, { type: 'json' });
+          if (!entry) return;
+          if (entry.progress) allProgress[key] = entry.progress;
+          submissions[key] = entry.submission;
+        }));
+        return response({ progress: allProgress, submissions });
+      }
+      const user = users.find(candidate => normalizePin(candidate.pin) === pin);
+      if (!pin || !user) return response({ error: 'Ученик не найден' }, 403);
+      const originalKey = String(user.pin);
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const current = await store.getWithMetadata(pin, { type: 'json' });
+        const oldProgress = current?.data?.progress ?? object(legacy.progress)[originalKey];
+        const oldSubmission = object(current?.data?.submission ?? object(legacy.submissions)[originalKey]);
+        const days = mergeDays(object(oldProgress), action === 'save' ? progress : {});
+        const submission = {
+          ...oldSubmission,
+          ...summarize(days),
+          name: user.name,
+          ts: Date.now(),
+          stats: mergeStats(oldSubmission.stats, stats),
+        };
+        const updated = await store.setJSON(pin, { progress: days, submission },
+          current ? { onlyIfMatch: current.etag } : { onlyIfNew: true });
+        if (updated.modified) return response({ ok: true });
+      }
+      return response({ error: 'Данные изменились одновременно. Повторите отправку.' }, 409);
+    } catch {
+      return response({ error: 'Хранилище временно недоступно' }, 503);
+    }
+  };
+}
+
+async function readLegacy() {
+  const bin = process.env.POWERLIFTING_JSONBIN_ID;
+  if (!/^[a-f0-9]{24}$/i.test(bin ?? '')) throw new Error('Missing JSONBin configuration');
+  const res = await fetch('https://api.jsonbin.io/v3/b/' + bin + '/latest', {
+    headers: { 'X-Bin-Meta': 'false' },
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!res.ok) throw new Error('Cannot read legacy data');
+  const data = await res.json();
+  return data.record || data;
+}
+
+export default createHandler({
+  openStore: () => getStore({ name: 'student-progress', consistency: 'strong' }),
+  readLegacy,
+  adminPin: process.env.POWERLIFTING_ADMIN_PIN,
+});

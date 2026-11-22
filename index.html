@@ -1602,43 +1602,35 @@ function scheduleStatsPush(){
   if(__statsPushTimer) clearTimeout(__statsPushTimer);
   __statsPushTimer = setTimeout(function(){ __statsPushTimer = null; pushStatsOnly(); }, 6000);
 }
+async function requestStudentProgress(action, pin, data){
+  var res = await fetch('/.netlify/functions/student-progress', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(Object.assign({action: action, pin: pin}, data))
+  });
+  var body;
+  try{ body = await res.json(); }catch(e){}
+  if(!res.ok || !body){
+    var error = new Error((body && body.error) || 'Хранилище недоступно (HTTP ' + res.status + ')');
+    error.status = res.status;
+    throw error;
+  }
+  return body;
+}
+
 async function pushStatsOnly(){
   if(!currentUser || isAdmin) return false;
-  if(!CLOUD_BIN_ID || !CLOUD_MASTER_KEY) return false;
-  var s = getStats();
-  var sig = (s.opens || 0) + '_' + (s.dayOpens || 0);
-  if(s._lastPush === sig) return false;
-  var myPin = currentUser.pin;
+  var pin = currentUser.pin;
+  var stats = getStats(pin);
+  var sig = (stats.opens || 0) + '_' + (stats.dayOpens || 0);
+  if(stats._lastPush === sig) return false;
   try{
-    var getRes = await fetch('https://api.jsonbin.io/v3/b/' + CLOUD_BIN_ID + '/latest?t=' + Date.now(), {headers: {'X-Bin-Meta': 'false'}, cache: 'no-store'});
-    if(!getRes.ok) return false;
-    var raw = await getRes.json();
-    var existing = raw.record || raw || {};
-    if(!existing.submissions || typeof existing.submissions !== 'object' || Array.isArray(existing.submissions)) existing.submissions = {};
-    var prev = existing.submissions[myPin] || {};
-    var prevStats = prev.stats || {};
-    var mergedStats = {
-      opens: Math.max(prevStats.opens || 0, s.opens || 0),
-      dayOpens: Math.max(prevStats.dayOpens || 0, s.dayOpens || 0),
-      pushes: Math.max(prevStats.pushes || 0, s.pushes || 0),
-      firstSeen: (prevStats.firstSeen && s.firstSeen) ? Math.min(prevStats.firstSeen, s.firstSeen) : (prevStats.firstSeen || s.firstSeen || Date.now()),
-      lastSeen: Math.max(prevStats.lastSeen || 0, s.lastSeen || 0, Date.now())
-    };
-    existing.submissions[myPin] = Object.assign({}, prev, {
-      name: currentUser.name || prev.name || ('PIN ' + myPin),
-      ts: Date.now(),
-      stats: mergedStats
-    });
-    var res = await fetch('https://api.jsonbin.io/v3/b/' + CLOUD_BIN_ID, {
-      method: 'PUT',
-      headers: {'Content-Type': 'application/json', 'X-Master-Key': CLOUD_MASTER_KEY},
-      body: JSON.stringify(existing),
-      keepalive: true
-    });
-    if(!res.ok) return false;
-    CLOUD_SUBMISSIONS = existing.submissions;
-    s._lastPush = sig;
-    saveStats(s);
+    await requestStudentProgress('stats', pin, {stats: stats});
+    var latest = getStats(pin);
+    if((latest.opens || 0) + '_' + (latest.dayOpens || 0) === sig){
+      latest._lastPush = sig;
+      saveStats(latest, pin);
+    }
     return true;
   }catch(e){ return false; }
 }
@@ -2159,18 +2151,18 @@ async function fetchCloudData(){
     return { ok: false, error: m };
   }
 }
+var analyticsAccessCode = '';
 async function fetchCloudProgressOnly(){
-  if(!CLOUD_BIN_ID) return { ok: false, error: 'Облако не настроено' };
+  if(!analyticsAccessCode) return {ok: false, error: 'Введите код доступа к облачной аналитике'};
   try{
-    var res = await fetch('https://api.jsonbin.io/v3/b/' + CLOUD_BIN_ID + '/latest?t=' + Date.now(), {headers: {'X-Bin-Meta': 'false'}, cache: 'no-store'});
-    if(!res.ok) return { ok: false, error: 'HTTP ' + res.status };
-    var raw = await res.json();
-    var payload = raw.record || raw;
-    if(payload.progress && typeof payload.progress === 'object' && !Array.isArray(payload.progress)) CLOUD_PROGRESS = payload.progress;
-    if(payload.submissions && typeof payload.submissions === 'object' && !Array.isArray(payload.submissions)) CLOUD_SUBMISSIONS = payload.submissions;
-    if(payload.progress || payload.submissions) return { ok: true };
-    return { ok: false, error: 'В облаке нет данных о прогрессе' };
-  }catch(err){ return { ok: false, error: String((err && err.message) || err) }; }
+    var payload = await requestStudentProgress('list', analyticsAccessCode);
+    CLOUD_PROGRESS = payload.progress || {};
+    CLOUD_SUBMISSIONS = payload.submissions || {};
+    return {ok: true};
+  }catch(err){
+    if(err.status === 403) analyticsAccessCode = '';
+    return {ok: false, error: err.message};
+  }
 }
 async function pushCloudData(){
   if(!CLOUD_BIN_ID || !CLOUD_MASTER_KEY) return { ok: false, error: 'Ключи не заданы' };
@@ -2197,10 +2189,8 @@ async function pushCloudData(){
 
 async function studentPushProgress(explicit){
   if(!currentUser){ if(explicit) showToast('Нужно войти', 'error'); return false; }
-  if(!CLOUD_BIN_ID || !CLOUD_MASTER_KEY){ if(explicit) showToast('Облако не настроено', 'error'); return false; }
   var myPin = currentUser.pin;
   if(explicit) showToast('Отправка...', 'info');
-  try{ if(!isAdmin) bumpStat('pushes'); }catch(e){}
   try{
     if(explicit && currentId){
       var field = document.getElementById('workout-comment');
@@ -2209,10 +2199,7 @@ async function studentPushProgress(explicit){
         showToast('Отправка...', 'info');
       }
     }
-    var athleteName = currentUser.name || ('PIN ' + myPin);
-    var st = getStats();
     var myProgress = {};
-    var rpeCount = 0, commentCount = 0, adjustCount = 0, setEditCount = 0;
     WORKOUTS.forEach(function(w){
       var base = 'pl_' + myPin + '_';
       var entry = null;
@@ -2226,7 +2213,7 @@ async function studentPushProgress(explicit){
       var adj = localStorage.getItem(base + 'adjust_' + w.id);
       if(adj){
         var n = parseInt(adj);
-        if(n > 0){ entry = entry || {}; entry.adjust = n; adjustCount++; }
+        if(n > 0){ entry = entry || {}; entry.adjust = n; }
       }
       var com = localStorage.getItem(base + 'comment_' + w.id);
       if(com){
@@ -2235,8 +2222,6 @@ async function studentPushProgress(explicit){
           if(c.rpe || c.text){
             entry = entry || {};
             entry.comment = c;
-            if(c.rpe) rpeCount++;
-            if(c.text) commentCount++;
             if(c.savedAt && (!entry.savedAt || c.savedAt > entry.savedAt)) entry.savedAt = c.savedAt;
           }
         }catch(e){}
@@ -2266,79 +2251,23 @@ async function studentPushProgress(explicit){
         myProgress[w.id] = entry;
       }
     });
-    var url = 'https://api.jsonbin.io/v3/b/' + CLOUD_BIN_ID;
-    async function readLatest(){
-      var response = await fetch(url + '/latest?t=' + Date.now(), {
-        headers: {'X-Bin-Meta': 'false'}, cache: 'no-store'
-      });
-      if(!response.ok) throw new Error('Не удалось прочитать облако (HTTP ' + response.status + ')');
-      var raw = await response.json();
-      var record = raw && (raw.record || raw);
-      if(!record || typeof record !== 'object' || Array.isArray(record)){
-        throw new Error('Облако вернуло некорректные данные');
-      }
-      return record;
+    var stats = getStats(myPin);
+    stats.pushes = (stats.pushes || 0) + 1;
+    stats.lastSeen = Date.now();
+    await requestStudentProgress('save', myPin, {progress: myProgress, stats: stats});
+    var latest = getStats(myPin);
+    latest.pushes = Math.max(latest.pushes || 0, stats.pushes);
+    latest.lastSeen = Math.max(latest.lastSeen || 0, stats.lastSeen);
+    if(latest.opens === stats.opens && latest.dayOpens === stats.dayOpens){
+      latest._lastPush = (stats.opens || 0) + '_' + (stats.dayOpens || 0);
     }
-    var existing = await readLatest();
-    var payload = Object.assign({}, existing, {
-      users: (existing.users && existing.users.length) ? existing.users : USERS,
-      workouts: (existing.workouts && existing.workouts.length) ? existing.workouts : WORKOUTS,
-      progress: existing.progress || {},
-      submissions: existing.submissions || {}
-    });
-    if(!payload.progress || typeof payload.progress !== 'object' || Array.isArray(payload.progress)) payload.progress = {};
-    if(!payload.submissions || typeof payload.submissions !== 'object' || Array.isArray(payload.submissions)) payload.submissions = {};
-    payload.progress[myPin] = myProgress;
-    payload.submissions[myPin] = {
-      name: athleteName,
-      ts: Date.now(),
-      daysCount: Object.keys(myProgress).length,
-      rpeCount: rpeCount,
-      commentCount: commentCount,
-      adjustCount: adjustCount,
-      setEditCount: setEditCount,
-      stats: {
-        opens: st.opens || 0,
-        dayOpens: st.dayOpens || 0,
-        pushes: st.pushes || 0,
-        firstSeen: st.firstSeen || Date.now(),
-        lastSeen: st.lastSeen || Date.now()
-      }
-    };
-    var res = await fetch(url, {
-      method: 'PUT',
-      headers: {'Content-Type': 'application/json', 'X-Master-Key': CLOUD_MASTER_KEY},
-      body: JSON.stringify(payload)
-    });
-    if(!res.ok){
-      var detail = '';
-      try{
-        var errorBody = await res.json();
-        if(typeof errorBody.message === 'string'){
-          detail = errorBody.message.split(CLOUD_MASTER_KEY).join('[скрыто]').slice(0, 250);
-        }
-      }catch(e){}
-      var confirmed;
-      try{ confirmed = await readLatest(); }catch(e){}
-      var cloudProgress = confirmed && confirmed.progress && confirmed.progress[myPin];
-      if(cloudProgress && JSON.stringify(cloudProgress) === JSON.stringify(myProgress)){
-        CLOUD_PROGRESS = confirmed.progress;
-        CLOUD_SUBMISSIONS = confirmed.submissions || {};
-        if(explicit) showToast('✅ Данные уже у тренера');
-        return true;
-      }
-      if(explicit){
-        showToast('Отправка не подтверждена (HTTP ' + res.status + ')' +
-          (detail ? ': ' + detail : '') + '. Отзыв сохранён на устройстве.', 'error');
-      }
-      return false;
-    }
-    CLOUD_PROGRESS = payload.progress;
-    CLOUD_SUBMISSIONS = payload.submissions;
-    try{ if(currentUser && currentUser.pin === myPin){ st._lastPush = (st.opens||0) + '_' + (st.dayOpens||0); saveStats(st); } }catch(e){}
+    saveStats(latest, myPin);
     if(explicit) showToast('✅ Отправлено тренеру');
     return true;
-  }catch(err){ if(explicit) showToast('Ошибка: ' + ((err && err.message) || err), 'error'); return false; }
+  }catch(err){
+    if(explicit) showToast('Отправка не подтверждена: ' + err.message, 'error');
+    return false;
+  }
 }
 
 async function studentPullCloud(){
@@ -2443,7 +2372,8 @@ function updateCloudStatus(){
   el.innerHTML = '<span class="ok">✅ Bin ID:</span> ' + CLOUD_BIN_ID.slice(0,10) + '...<br><span class="' + (CLOUD_MASTER_KEY ? 'ok' : 'err') + '">' + (CLOUD_MASTER_KEY ? '✅ Master Key указан' : '⚠️ Master Key отсутствует') + '</span>' + s;
 }
 function logout(){
-  if(currentUser && !isAdmin && CLOUD_BIN_ID && CLOUD_MASTER_KEY){
+  analyticsAccessCode = '';
+  if(currentUser && !isAdmin){
     try{ saveAllNow(); }catch(e){}
     try{ studentPushProgress(false).catch(function(){}); }catch(e){}
   }
@@ -3189,7 +3119,7 @@ document.querySelectorAll('.admin-tab').forEach(function(tab){
       if(tab.dataset.adminTab === 'workouts') renderAdminWorkouts();
       if(tab.dataset.adminTab === 'analytics'){
         renderAnalytics();
-        if((!Object.keys(CLOUD_PROGRESS).length && !Object.keys(CLOUD_SUBMISSIONS).length) && CLOUD_BIN_ID){
+        if(analyticsAccessCode){
           fetchCloudProgressOnly().then(function(r){ if(r.ok) renderAnalytics(); }).catch(function(){});
         }
       }
@@ -4226,7 +4156,10 @@ function renderAnalytics(){
   container.innerHTML = html;
 }
 async function adminPullAnalyticsCloud(){
-  if(!CLOUD_BIN_ID){ alert('Облако не настроено'); return; }
+  if(!analyticsAccessCode){
+    analyticsAccessCode = (prompt('Введите код доступа к облачной аналитике') || '').trim();
+    if(!analyticsAccessCode) return;
+  }
   showToast('Загрузка...', 'info');
   var r = await fetchCloudProgressOnly();
   if(r.ok){ showToast('Обновлено'); renderAnalytics(); updateCloudStatus(); }
