@@ -344,6 +344,8 @@ h2{font-size:18px;margin:28px 0 14px;padding-left:14px;border-left:4px solid var
 .img-lightbox .il-img{max-width:92vw;max-height:86vh;object-fit:contain;will-change:transform;box-shadow:0 8px 40px rgba(0,0,0,.8);border-radius:6px;transform-origin:center center}
 .img-lightbox .il-close{position:absolute;top:16px;right:16px;background:rgba(255,255,255,.15);color:#fff;border:none;width:44px;height:44px;border-radius:50%;font-size:28px;line-height:1;cursor:pointer;font-family:inherit;display:flex;align-items:center;justify-content:center;transition:background .15s;z-index:2}
 .img-lightbox .il-close:hover{background:rgba(231,76,60,.9)}
+.img-lightbox .il-download{position:absolute;bottom:82px;left:50%;transform:translateX(-50%);z-index:2;white-space:nowrap;background:#20242e;color:#fff;border:1px solid rgba(255,255,255,.4);border-radius:20px;padding:9px 15px;font-size:13px;font-weight:800;text-decoration:none}
+.img-lightbox .il-download:hover,.img-lightbox .il-download:focus-visible{background:#343b49}
 .img-lightbox .il-zoom-bar{position:absolute;bottom:20px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:8px;background:rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.2);padding:6px 10px;border-radius:24px;z-index:2}
 .img-lightbox .il-zoom-bar button{background:rgba(255,255,255,.15);color:#fff;border:none;width:38px;height:38px;border-radius:50%;font-size:18px;font-weight:900;cursor:pointer;font-family:inherit;display:flex;align-items:center;justify-content:center;transition:background .15s;padding:0;line-height:1}
 .img-lightbox .il-zoom-bar button:hover{background:rgba(255,255,255,.3)}
@@ -438,6 +440,12 @@ h2{font-size:18px;margin:28px 0 14px;padding-left:14px;border-left:4px solid var
 .load-period-date input{font:inherit;color:var(--text);background:var(--input-bg);border:1px solid var(--border);border-radius:6px;padding:4px}
 .load-track{height:8px;background:var(--input-bg);border-radius:5px;overflow:hidden;margin-bottom:7px}
 .load-track>div{height:100%;background:var(--accent);border-radius:5px}
+
+.plan-fact-table{width:100%;border-collapse:collapse;margin:10px 0;font-size:12px;overflow-wrap:anywhere}
+.plan-fact-table caption{text-align:left;font-weight:800;padding:5px 0}
+.plan-fact-table th,.plan-fact-table td{text-align:left;padding:6px 4px;border-bottom:1px solid var(--border);vertical-align:top}
+.plan-fact-table .plan-fact-difference{background:var(--input-bg);box-shadow:inset 3px 0 var(--accent)}
+.plan-fact-table small{display:block;color:var(--text-muted);margin-top:3px}
 </style>
 </head>
 <body>
@@ -559,18 +567,22 @@ h2{font-size:18px;margin:28px 0 14px;padding-left:14px;border-left:4px solid var
       <div class="we-row">
         <div class="we-field" id="se-kg-field"><label>Вес (кг)</label><input type="number" id="se-kg" step="0.5" min="0"></div>
         <div class="we-field" id="se-pct-field" style="display:none;"><label>% от 1ПМ</label><input type="number" id="se-pct" step="0.5" min="0" max="150"></div>
-        <div class="we-field"><label>Повторы</label><input type="text" id="se-reps" inputmode="numeric"></div>
+        <div class="we-field"><label for="se-reps">Повторы</label><input type="number" id="se-reps" inputmode="numeric" min="1" step="1"></div>
       </div>
       <div class="we-field">
-        <label>Почему изменил (опционально)</label>
-        <input type="text" id="se-note" placeholder="Например: устал, болит плечо..." maxlength="200">
+        <label for="se-rpe">Усилие RPE (необязательно)</label>
+        <input type="number" id="se-rpe" min="1" max="10" step="0.5" inputmode="decimal" placeholder="1–10">
+      </div>
+      <div class="we-field">
+        <label for="se-note">Заметка к подходу (необязательно)</label>
+        <input type="text" id="se-note" placeholder="Например: не хватило одного повтора" maxlength="200">
       </div>
       <div id="se-error" style="color:#c0392b;font-size:12px;font-weight:700;min-height:16px;"></div>
     </div>
     <div class="modal-actions" style="flex-wrap:wrap;">
       <button class="modal-btn danger" id="se-reset" onclick="resetSetEditFromModal()" style="display:none;flex:0 0 auto;padding:13px 16px;">↩️ По плану</button>
       <button class="modal-btn secondary" onclick="closeSetEditModal()">Отмена</button>
-      <button class="modal-btn primary" onclick="saveSetEditFromModal()">💾 Сохранить</button>
+      <button class="modal-btn primary" onclick="saveSetEditFromModal()">Сохранить подход</button>
     </div>
   </div>
 </div>
@@ -650,6 +662,7 @@ h2{font-size:18px;margin:28px 0 14px;padding-left:14px;border-left:4px solid var
   <button class="il-close" onclick="closeLightbox()" title="Закрыть (Esc)">×</button>
   <div class="il-hint">Колесо — зум · двойной клик — 1× / 2.5× · перетаскивание при увеличении</div>
   <img class="il-img" id="il-img" src="" alt="" draggable="false">
+  <a class="il-download" id="il-download" download hidden>Скачать картинку</a>
   <div class="il-zoom-bar">
     <button onclick="zoomLightbox(-0.5)" title="Уменьшить">−</button>
     <span class="il-zoom-val" id="il-zoom-val">100%</span>
@@ -1335,6 +1348,10 @@ function openLightbox(src){
   var img = document.getElementById('il-img');
   if(!lb || !img) return;
   img.src = src;
+  var download = document.getElementById('il-download');
+  download.hidden = !currentUser || isAdmin;
+  if(download.hidden) download.removeAttribute('href');
+  else download.href = img.src;
   __lbState.scale = 1; __lbState.tx = 0; __lbState.ty = 0;
   applyLbTransform();
   lb.classList.add('open');
@@ -1962,9 +1979,11 @@ function openSetEditModal(dayId, itemId, setIdx, item, rm){
   document.getElementById('se-title').textContent = item.name;
   document.getElementById('se-sub').textContent = 'Подход ' + (setIdx + 1) + ' из ' + (item.sets || []).length;
 
-  var planText = effPct + '%';
-  if(planKg != null) planText += ' · ' + planKg + ' кг';
-  planText += ' × ' + s.reps;
+  var snapshot = readWorkoutProgress(dayId).items?.[itemId]?.loads?.[setIdx];
+  var plan = snapshot?.plan || trainingPlanForSet(s, rm);
+  var planText = plan.pct + (plan.pctMax != null ? '–' + plan.pctMax : '') + '%';
+  if(plan.kg != null) planText += ' · ' + plan.kg + (plan.kgMax != null ? '–' + plan.kgMax : '') + ' кг';
+  planText += ' × ' + plan.reps;
   document.getElementById('se-plan').textContent = planText;
 
   var kgField = document.getElementById('se-kg-field');
@@ -1973,26 +1992,29 @@ function openSetEditModal(dayId, itemId, setIdx, item, rm){
   var pctInput = document.getElementById('se-pct');
   var repsInput = document.getElementById('se-reps');
   var noteInput = document.getElementById('se-note');
+  document.getElementById('se-rpe').value = snapshot?.rpe ?? edit?.rpe ?? '';
 
-  if(rm){
+  if(rm || snapshot?.kg != null || edit?.kg != null){
     kgField.style.display = '';
     pctField.style.display = 'none';
-    if(edit && edit.kg != null) kgInput.value = edit.kg;
+    if(snapshot?.kg != null) kgInput.value = snapshot.kg;
+    else if(edit && edit.kg != null) kgInput.value = edit.kg;
     else if(edit && edit.pct != null) kgInput.value = Math.round(rm * edit.pct / 100 * 2) / 2;
     else kgInput.value = planKg != null ? planKg : '';
   }else{
-    kgField.style.display = 'none';
+    kgField.style.display = '';
+    kgInput.value = '';
     pctField.style.display = '';
     if(edit && edit.pct != null) pctInput.value = edit.pct;
     else pctInput.value = effPct;
   }
-  repsInput.value = (edit && edit.reps != null) ? edit.reps : String(s.reps);
+  repsInput.value = snapshot?.reps ?? edit?.reps ?? String(s.reps);
   noteInput.value = (edit && edit.note) ? edit.note : '';
   document.getElementById('se-error').textContent = '';
   document.getElementById('se-reset').style.display = edit ? '' : 'none';
 
   document.getElementById('set-edit-modal').classList.add('open');
-  setTimeout(function(){ if(rm) kgInput.focus(); else pctInput.focus(); }, 200);
+  setTimeout(function(){ if(kgField.style.display !== 'none') kgInput.focus(); else pctInput.focus(); }, 200);
 }
 function closeSetEditModal(){
   document.getElementById('set-edit-modal').classList.remove('open');
@@ -2002,14 +2024,19 @@ function saveSetEditFromModal(){
   if(!window.__setEditCtx) return;
   var ctx = window.__setEditCtx;
   var err = document.getElementById('se-error');
-  var reps = document.getElementById('se-reps').value.trim();
-  if(!reps){ err.textContent = 'Укажите повторы'; return; }
+  var reps = document.getElementById('se-reps').valueAsNumber;
+  if(!Number.isInteger(reps) || reps < 1){ err.textContent = 'Укажите целое число повторений от 1'; return; }
+  var rpeInput = document.getElementById('se-rpe');
+  var rpe = rpeInput.valueAsNumber;
+  if(rpeInput.value && !isSetRpe(rpe)){ err.textContent = 'Укажите RPE от 1 до 10 с шагом 0,5'; return; }
   var data = { reps: reps };
-  if(ctx.rm){
-    var kg = parseFloat(document.getElementById('se-kg').value);
+  if(rpeInput.value) data.rpe = rpe;
+  var kgInput = document.getElementById('se-kg');
+  if(kgInput.value !== '' || ctx.rm || document.getElementById('se-pct-field').style.display === 'none'){
+    var kg = kgInput.valueAsNumber;
     if(isNaN(kg) || kg < 0){ err.textContent = 'Неверный вес'; return; }
     data.kg = kg;
-    data.pct = Math.round(kg / ctx.rm * 100 * 2) / 2;
+    if(ctx.rm) data.pct = Math.round(kg / ctx.rm * 100 * 2) / 2;
   }else{
     var pct = parseFloat(document.getElementById('se-pct').value);
     if(isNaN(pct) || pct < 0 || pct > 150){ err.textContent = 'Неверный %'; return; }
@@ -2020,8 +2047,8 @@ function saveSetEditFromModal(){
   saveSetEdit(ctx.dayId, ctx.itemId, ctx.setIdx, data);
   closeSetEditModal();
   renderAll();
-  refreshRecordedSet(ctx.itemId, ctx.setIdx);
-  showToast('Подход изменён');
+  refreshRecordedSet(ctx.itemId, ctx.setIdx, true);
+  showToast('Подход сохранён');
 }
 function resetSetEditFromModal(){
   if(!window.__setEditCtx) return;
@@ -2275,7 +2302,6 @@ async function studentPushProgress(explicit){
                   var o = JSON.parse(s);
                   if(o && typeof o === 'object' && Object.keys(o).length > 0){
                     setEditsForDay[it.id] = o;
-                    setEditCount += Object.keys(o).length;
                   }
                 }
               }catch(e){}
@@ -2803,6 +2829,7 @@ function renderItemStudent(it){
       var set = document.createElement('div');
       set.className = 'set' + (edit ? ' edited' : '');
       set.dataset.setIdx = setIdx;
+      set.dataset.trainingPlan = JSON.stringify(trainingPlanForSet(s, rm));
       var effPct = itemAdj > 0 ? Math.round(s.pct * (1 - itemAdj / 100) * 2) / 2 : s.pct;
       var effPctMax = s.pctMax ? (itemAdj > 0 ? Math.round(s.pctMax * (1 - itemAdj / 100) * 2) / 2 : s.pctMax) : null;
       var displayPct, displayKg, displayReps;
@@ -3036,24 +3063,34 @@ function readWorkoutProgress(dayId){
   try{ return JSON.parse(localStorage.getItem(progressKeyFor(dayId)) || '{}') || {}; }
   catch(e){ return {}; }
 }
-function readSetLoad(set, performedAt){
+function isSetRpe(value){
+  return Number.isFinite(value) && value >= 1 && value <= 10 && Number.isInteger(value * 2);
+}
+function trainingPlanForSet(set, rm){
+  if(!set) return null;
+  function weight(percent){ return rm > 0 && percent != null ? Math.round(rm * percent / 50) / 2 : null; }
+  return {pct:set.pct, pctMax:set.pctMax, kg:weight(set.pct), kgMax:weight(set.pctMax), reps:set.reps};
+}
+function readSetLoad(set, performedAt, plan, edit){
   var weight = set.querySelector('.kg')?.textContent.trim().match(/^(\d+(?:[.,]\d+)?)\s*кг$/);
   var reps = set.querySelector('.reps')?.textContent.trim().match(/^×\s*(\d+)$/);
   return {
     kg: weight ? Number(weight[1].replace(',', '.')) : null,
     reps: reps && Number(reps[1]) > 0 ? Number(reps[1]) : null,
-    performedAt: performedAt
+    performedAt: performedAt,
+    plan: plan || JSON.parse(set.dataset.trainingPlan || 'null'),
+    rpe: edit && isSetRpe(edit.rpe) ? edit.rpe : null
   };
 }
-function refreshRecordedSet(itemId, index){
+function refreshRecordedSet(itemId, index, markDone){
   var exercise = Array.from(document.querySelectorAll('#main-content [data-item-id]')).find(function(node){
     return node.dataset.itemId === String(itemId);
   });
   var set = exercise && exercise.querySelectorAll('.set')[index];
-  if(set && set.classList.contains('done')){
-    saveCheckState(set);
-    renderCurrentLoad();
-  }
+  if(!set || (!markDone && !set.classList.contains('done'))) return;
+  set.classList.add('done');
+  saveCheckState(set);
+  updateProgress();
 }
 function saveCheckState(changedSet){
   if(!currentUser || !currentId) return;
@@ -3074,7 +3111,8 @@ function saveCheckState(changedSet){
           done.push(i);
           var recorded = oldLoads[i];
           if(s === changedSet){
-            loads[i] = readSetLoad(s, recorded && recorded.performedAt || state.savedAt);
+            var edit = loadSetEdits(currentId, id)[i];
+            loads[i] = readSetLoad(s, recorded && recorded.performedAt || state.savedAt, recorded && recorded.plan, edit);
           }else if(recorded){
             loads[i] = recorded;
           }
@@ -4298,41 +4336,7 @@ function renderAnalytics(){
       if(st.savedAt){ var t = new Date(st.savedAt); if(!isNaN(t.getTime())){ meta += '<span>Сохранено: <b>' + String(t.getDate()).padStart(2, '0') + '.' + String(t.getMonth() + 1).padStart(2, '0') + ' ' + String(t.getHours()).padStart(2, '0') + ':' + String(t.getMinutes()).padStart(2, '0') + '</b></span>'; } }
       var commentHtml = '';
       if(st.comment && st.comment.text) commentHtml = '<div class="analytics-day-comment"><b>💬 Комментарий:</b> ' + esc(st.comment.text) + '</div>';
-      var setEditRowsHtml = '';
-      if(st.setEdits){
-        var editRowsHtml = '';
-        Object.keys(st.setEdits).forEach(function(itemId){
-          var item = null;
-          (w.blocks || []).forEach(function(b){ (b.items || []).forEach(function(it){ if(it.id === itemId) item = it; }); });
-          if(!item) return;
-          var edits = st.setEdits[itemId];
-          var rmVal = null;
-          try{
-            var rmSaved = localStorage.getItem('pl_' + pin + '_rm');
-            if(rmSaved){ var rmObj = JSON.parse(rmSaved); rmVal = parseFloat(rmObj[item.lift]) || null; }
-            if(!rmVal){ var uObj = USERS.find(function(u){ return String(u.pin) === String(pin); }); if(uObj) rmVal = parseFloat(uObj[item.lift]) || null; }
-          }catch(err){}
-          Object.keys(edits).sort(function(a, b){ return parseInt(a) - parseInt(b); }).forEach(function(sIdx){
-            var e = edits[sIdx];
-            var planSet = (item.sets || [])[parseInt(sIdx)];
-            var planStr = '';
-            if(planSet){
-              var planKg = rmVal ? Math.round(rmVal * planSet.pct / 100 * 2) / 2 : null;
-              planStr = planSet.pct + '%' + (planKg != null ? ' (' + planKg + ' кг)' : '') + ' × ' + planSet.reps;
-            }
-            var actualStr = '';
-            if(e.kg != null) actualStr += e.kg + ' кг';
-            else if(e.pct != null) actualStr += e.pct + '%';
-            if(e.reps != null) actualStr += (actualStr ? ' × ' : '') + e.reps;
-            var noteStr = e.note ? ' <span style="color:var(--text-soft);font-style:italic;font-weight:600;">— ' + esc(e.note) + '</span>' : '';
-            editRowsHtml += '<div style="padding:6px 0;border-bottom:1px dashed var(--border-soft);font-size:12px;">' +
-              '<div style="font-weight:800;color:var(--text);">' + esc(item.name) + ', подход ' + (parseInt(sIdx) + 1) + '</div>' +
-              (planStr ? '<div style="color:var(--text-muted);font-size:11px;margin-top:1px;">план: ' + planStr + '</div>' : '') +
-              '<div style="color:#b8730a;font-weight:700;margin-top:1px;">факт: ' + actualStr + noteStr + '</div></div>';
-          });
-        });
-        if(editRowsHtml) setEditRowsHtml = '<details class="analytics-day-details" open style="border-top:2px solid #f39c12;padding-top:8px;margin-top:8px;"><summary style="color:#b8730a;font-weight:800;">⚡ Изменения подходов</summary>' + editRowsHtml + '</details>';
-      }
+      var setEditRowsHtml = renderCoachPlanFact(user, getWorkoutForUser(user, w.id) || w, data[w.id]);
       var detailsHtml = '';
       if(st.itemsDetail && st.itemsDetail.length){
         var rows = st.itemsDetail.map(function(d){
@@ -4351,6 +4355,46 @@ function renderAnalytics(){
   });
   container.innerHTML = html;
   bindCoachTrainingLoad(container.querySelector('#coach-training-load'), user, data);
+}
+function renderCoachPlanFact(user, workout, entry){
+  if(!entry) return '';
+  var groups = [];
+  (workout.blocks || []).forEach(function(block){
+    (block.items || []).forEach(function(item){
+      if(item.type !== 'percent') return;
+      var progress = (entry.items || {})[item.id] || {};
+      var edits = (entry.loadEdits || entry.setEdits || {})[item.id] || {};
+      var indexes = new Set([...(progress.sets || []), ...Object.keys(edits).map(Number)]);
+      var rows = [...indexes].sort(function(a,b){ return a-b; }).map(function(index){
+        var saved = progress.loads && progress.loads[index];
+        var edit = edits[index];
+        var plan = saved?.plan || trainingPlanForSet((item.sets || [])[index], Number(user[item.lift]));
+        var actual = saved || edit;
+        if(!plan) return '';
+        function display(value){
+          if(!value) return '—';
+          var weight = value.kg != null ? value.kg + (value.kgMax != null ? '–' + value.kgMax : '') + ' кг' :
+            value.pct != null ? value.pct + (value.pctMax != null ? '–' + value.pctMax : '') + '%' : '';
+          return [weight, value.reps].filter(function(v){ return v != null && v !== ''; }).join(' × ') || '—';
+        }
+        var delta = actual && /^\d+$/.test(String(plan.reps)) && /^\d+$/.test(String(actual.reps)) ?
+          Number(actual.reps) - Number(plan.reps) : 0;
+        var weightDiff = actual?.kg != null && plan.kg != null &&
+          (actual.kg < plan.kg || actual.kg > (plan.kgMax ?? plan.kg));
+        var difference = delta ? (delta > 0 ? '+' : '−') + Math.abs(delta) + ' повт.' : '';
+        if(weightDiff) difference += (difference ? ' · ' : '') + 'Вес отличается';
+        return '<tr' + (difference ? ' class="plan-fact-difference"' : '') + '><th scope="row">' +
+          (index+1) + '</th><td>' + esc(display(plan)) + '</td><td>' + esc(display(actual)) +
+          (difference ? '<small>' + esc(difference) + '</small>' : '') +
+          (edit?.note ? '<small>' + esc(edit.note) + '</small>' : '') + '</td><td>' +
+          (isSetRpe(actual?.rpe) ? esc(String(actual.rpe).replace('.', ',')) : '—') + '</td></tr>';
+      }).join('');
+      if(rows) groups.push('<table class="plan-fact-table"><caption>' + esc(item.name) +
+        '</caption><thead><tr><th scope="col">Подход</th><th scope="col">План</th><th scope="col">Факт</th><th scope="col">RPE</th></tr></thead><tbody>' +
+        rows + '</tbody></table>');
+    });
+  });
+  return groups.length ? '<details class="analytics-day-details" open><summary>План и факт подходов</summary>' + groups.join('') + '</details>' : '';
 }
 function coachTrainingLoadItems(user, workout, entry, submittedAt){
   var catalog = new Map();
