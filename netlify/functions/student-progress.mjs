@@ -70,11 +70,14 @@ export function createHandler({ openStore, readLegacy, adminPin }) {
       return response({ error: 'Требуется доступ тренера' }, 403);
     }
     if (!['list','save','stats'].includes(action)) return response({ error: 'Неизвестное действие' }, 400);
+    let stage = 'legacy-read';
     try {
       const legacy = await readLegacy();
       const users = legacy.users;
       if (!Array.isArray(users)) throw new Error('Missing users');
+      stage = 'blob-connect';
       const store = openStore();
+      stage = 'blob-read';
       if (action === 'list') {
         const allProgress = { ...object(legacy.progress) };
         const submissions = { ...object(legacy.submissions) };
@@ -92,6 +95,7 @@ export function createHandler({ openStore, readLegacy, adminPin }) {
       if (!pin || !user) return response({ error: 'Ученик не найден' }, 403);
       const originalKey = String(user.pin);
       for (let attempt = 0; attempt < 5; attempt++) {
+        stage = 'blob-read';
         const current = await store.getWithMetadata(pin, { type: 'json' });
         const oldProgress = current?.data?.progress ?? object(legacy.progress)[originalKey];
         const oldSubmission = object(current?.data?.submission ?? object(legacy.submissions)[originalKey]);
@@ -103,25 +107,31 @@ export function createHandler({ openStore, readLegacy, adminPin }) {
           ts: Date.now(),
           stats: mergeStats(oldSubmission.stats, stats),
         };
+        stage = 'blob-write';
         const updated = await store.setJSON(pin, { progress: days, submission },
           current ? { onlyIfMatch: current.etag } : { onlyIfNew: true });
         if (updated.modified) return response({ ok: true });
       }
       return response({ error: 'Данные изменились одновременно. Повторите отправку.' }, 409);
-    } catch {
-      return response({ error: 'Хранилище временно недоступно' }, 503);
+    } catch (error) {
+      const status = error?.status ?? error?.statusCode;
+      console.error('student-progress', { stage, name: error?.name, status: Number.isInteger(status) ? status : undefined });
+      const message = stage === 'legacy-read'
+        ? 'Не удалось прочитать список учеников из JSONBin'
+        : 'Не удалось '+ (stage === 'blob-write' ? 'записать прогресс в Netlify Blobs' : 'прочитать данные из Netlify Blobs');
+      return response({ error: message, stage }, 503);
     }
   };
 }
 
 async function readLegacy() {
-  const bin = process.env.POWERLIFTING_JSONBIN_ID;
+  const bin = process.env.POWERLIFTING_JSONBIN_ID?.trim() || '6ad3f7d4ffd5d1605374802b';
   if (!/^[a-f0-9]{24}$/i.test(bin ?? '')) throw new Error('Missing JSONBin configuration');
   const res = await fetch('https://api.jsonbin.io/v3/b/' + bin + '/latest', {
     headers: { 'X-Bin-Meta': 'false' },
     signal: AbortSignal.timeout(8000),
   });
-  if (!res.ok) throw new Error('Cannot read legacy data');
+  if (!res.ok) throw Object.assign(new Error('Cannot read legacy data'), { status: res.status });
   const data = await res.json();
   return data.record || data;
 }
