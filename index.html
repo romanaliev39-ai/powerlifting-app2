@@ -423,6 +423,21 @@ h2{font-size:18px;margin:28px 0 14px;padding-left:14px;border-left:4px solid var
 .training-tools-content output p:last-child{margin-bottom:0}
 .training-tools-content a{display:inline-block;margin-top:12px;color:var(--accent)}
 .set .training-plate-weight{background:transparent;border:0;padding:0;font-family:inherit;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:3px;cursor:pointer}
+
+.load-card h3{font-size:15px;margin:0 0 8px;color:var(--text)}
+.load-total{display:block;color:var(--accent);font-size:clamp(25px,5vw,38px);font-weight:900;line-height:1.2}
+.load-coverage{font-size:12px;color:var(--text-muted);margin:6px 0 10px}
+.load-row,.load-day-detail{display:flex;flex-wrap:wrap;gap:4px 12px;justify-content:space-between;font-size:13px}
+.load-row{padding:5px 0}.load-day-detail{margin:8px 0;color:var(--text)}
+.load-analytics{border:1px solid var(--border);border-radius:12px;background:var(--card);margin-top:16px;padding:14px}
+.load-periods{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
+.load-periods button{font:inherit;font-size:13px;font-weight:700;background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:7px;padding:6px 10px;cursor:pointer}
+.load-periods button[aria-pressed=true]{background:var(--accent);color:white;border-color:transparent}
+.load-period-date{display:block;margin:8px 0;font-size:13px;color:var(--text-muted)}
+.load-period-date[hidden]{display:none}
+.load-period-date input{font:inherit;color:var(--text);background:var(--input-bg);border:1px solid var(--border);border-radius:6px;padding:4px}
+.load-track{height:8px;background:var(--input-bg);border-radius:5px;overflow:hidden;margin-bottom:7px}
+.load-track>div{height:100%;background:var(--accent);border-radius:5px}
 </style>
 </head>
 <body>
@@ -799,6 +814,7 @@ h2{font-size:18px;margin:28px 0 14px;padding-left:14px;border-left:4px solid var
       <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
     </div>
 
+    <section class="card load-card" id="student-training-load" aria-live="polite" aria-label="Тоннаж тренировки"></section>
     <div class="card" id="comment-card" style="display:none;">
       <div style="font-size:15px;font-weight:800;margin-bottom:4px;">💬 Отзыв о тренировке</div>
       <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">Как прошло? Это увидит тренер.</div>
@@ -2004,6 +2020,7 @@ function saveSetEditFromModal(){
   saveSetEdit(ctx.dayId, ctx.itemId, ctx.setIdx, data);
   closeSetEditModal();
   renderAll();
+  refreshRecordedSet(ctx.itemId, ctx.setIdx);
   showToast('Подход изменён');
 }
 function resetSetEditFromModal(){
@@ -2012,6 +2029,7 @@ function resetSetEditFromModal(){
   saveSetEdit(ctx.dayId, ctx.itemId, ctx.setIdx, null);
   closeSetEditModal();
   renderAll();
+  refreshRecordedSet(ctx.itemId, ctx.setIdx);
   showToast('Сброшено по плану');
 }
 
@@ -2830,7 +2848,7 @@ function renderItemStudent(it){
         if(e.target.closest && e.target.closest('.set-edit, .training-plate-weight')) return;
         if(isWorkoutLocked()) return;
         set.classList.toggle('done');
-        saveCheckState();
+        saveCheckState(set);
         updateProgress();
         showToast('Сохранено');
       });
@@ -2975,29 +2993,16 @@ function getTrainingVolumeRows(){
   WORKOUTS.filter(function(workout){ return String(workout.week) === String(selected.week); }).forEach(function(workout){
     var day = getWorkoutForUser(currentUser, workout.id);
     if(!day) return;
-    var state;
-    try{ state = JSON.parse(localStorage.getItem(progressKeyFor(day.id)) || '{}'); }catch(e){ return; }
+    var items = readWorkoutProgress(day.id).items || {};
     (day.blocks || []).forEach(function(block){
       (block.items || []).forEach(function(item){
-        if(item.type !== 'percent') return;
-        var progress = state.items && state.items[item.id];
-        if(!progress || !Array.isArray(progress.sets)) return;
-        var edits = loadSetEdits(day.id, item.id);
-        var adjustment = loadAdjustForItem(day.id, item.id);
-        var rm = getRM(item.lift);
-        progress.sets.forEach(function(index){
-          var set = (item.sets || [])[index];
-          if(!set) return;
-          var edit = edits[index] || {};
-          var reps = Number(edit.reps == null ? set.reps : edit.reps);
-          var percent = edit.pct == null
-            ? Math.round(set.pct * (1 - adjustment / 100) * 2) / 2
-            : edit.pct;
-          var kg = edit.kg == null && rm ? Math.round(rm * percent / 100 * 2) / 2 : Number(edit.kg);
-          if(set.pctMax && edit.kg == null && edit.pct == null) return;
-          if(!Number.isInteger(reps) || reps < 1 || !(kg > 0) || !Number.isFinite(kg)) return;
+        var progress = items[item.id];
+        if(!progress || !Array.isArray(progress.sets) || !progress.loads) return;
+        new Set(progress.sets).forEach(function(index){
+          var load = progress.loads[index];
+          if(!isRecordedTrainingLoad(load)) return;
           var name = String(item.name || 'Упражнение').replace(/[;\r\n]+/g, ' ');
-          rows.push([name, 1, reps, kg].join('; '));
+          rows.push([name, 1, load.reps, load.kg].join('; '));
         });
       });
     });
@@ -3027,19 +3032,55 @@ function getDayProgress(dayId){
     return {done: done, total: total, pct: total ? Math.round(done / total * 100) : 0};
   }catch(e){ return {done: 0, total: 0, pct: 0}; }
 }
-function saveCheckState(){
+function readWorkoutProgress(dayId){
+  try{ return JSON.parse(localStorage.getItem(progressKeyFor(dayId)) || '{}') || {}; }
+  catch(e){ return {}; }
+}
+function readSetLoad(set, performedAt){
+  var weight = set.querySelector('.kg')?.textContent.trim().match(/^(\d+(?:[.,]\d+)?)\s*кг$/);
+  var reps = set.querySelector('.reps')?.textContent.trim().match(/^×\s*(\d+)$/);
+  return {
+    kg: weight ? Number(weight[1].replace(',', '.')) : null,
+    reps: reps && Number(reps[1]) > 0 ? Number(reps[1]) : null,
+    performedAt: performedAt
+  };
+}
+function refreshRecordedSet(itemId, index){
+  var exercise = Array.from(document.querySelectorAll('#main-content [data-item-id]')).find(function(node){
+    return node.dataset.itemId === String(itemId);
+  });
+  var set = exercise && exercise.querySelectorAll('.set')[index];
+  if(set && set.classList.contains('done')){
+    saveCheckState(set);
+    renderCurrentLoad();
+  }
+}
+function saveCheckState(changedSet){
   if(!currentUser || !currentId) return;
   try{
+    var previous = readWorkoutProgress(currentId).items || {};
     var state = {items: {}, savedAt: Date.now()};
-    document.querySelectorAll('[data-item-id]').forEach(function(el){
+    document.querySelectorAll('#main-content [data-item-id]').forEach(function(el){
       var id = el.dataset.itemId, st = {};
       var singleCheck = el.querySelector('.check-single');
       if(singleCheck && singleCheck.classList.contains('done')) st.done = true;
       var sets = el.querySelectorAll('.set');
       if(sets.length){
         var done = [];
-        sets.forEach(function(s, i){ if(s.classList.contains('done')) done.push(i); });
+        var oldLoads = previous[id] && previous[id].loads || {};
+        var loads = {};
+        sets.forEach(function(s, i){
+          if(!s.classList.contains('done')) return;
+          done.push(i);
+          var recorded = oldLoads[i];
+          if(s === changedSet){
+            loads[i] = readSetLoad(s, recorded && recorded.performedAt || state.savedAt);
+          }else if(recorded){
+            loads[i] = recorded;
+          }
+        });
         if(done.length) st.sets = done;
+        if(Object.keys(loads).length) st.loads = loads;
       }
       var timers = el.querySelectorAll('.timer-card');
       if(timers.length){
@@ -3099,6 +3140,57 @@ function updateProgress(){
   if(pf) pf.style.width = pct + '%';
   var pt = document.getElementById('progress-text');
   if(pt) pt.textContent = pct + '% (' + done + '/' + total + ')';
+  renderCurrentLoad();
+}
+var loadNumber = new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 2});
+function formatTrainingLoad(kg){ return loadNumber.format(kg) + ' кг'; }
+function isRecordedTrainingLoad(load){
+  return load && Number.isFinite(load.kg) && load.kg >= 0 && Number.isInteger(load.reps) && load.reps > 0;
+}
+function trainingLoadSummary(workout, items, withinPeriod){
+  var summary = {kg:0, counted:0, unknown:0, exercises:[]};
+  if(!workout || !items) return summary;
+  var names = new Map();
+  (workout.blocks || []).forEach(function(block){
+    (block.items || []).forEach(function(item){ names.set(String(item.id), item.name); });
+  });
+  Object.keys(items).forEach(function(id){
+    var item = items[id];
+    if(!item || !Array.isArray(item.sets)) return;
+    var kg = 0, counted = 0;
+    new Set(item.sets).forEach(function(index){
+      var load = item.loads && item.loads[index];
+      if(withinPeriod && !withinPeriod(load && load.performedAt)) return;
+      if(!isRecordedTrainingLoad(load)){
+        summary.unknown++;
+        return;
+      }
+      kg += load.kg * load.reps;
+      counted++;
+    });
+    if(counted) summary.exercises.push({name:names.get(id) || 'Сохранённое упражнение', kg:kg});
+    summary.kg += kg;
+    summary.counted += counted;
+  });
+  return summary;
+}
+function trainingLoadCoverage(summary){
+  return 'Учтено подходов: ' + summary.counted + (summary.unknown ? ' · Без данных: ' + summary.unknown : '');
+}
+function trainingLoadValue(summary){
+  return !summary.counted && summary.unknown ? '—' : formatTrainingLoad(summary.kg);
+}
+function renderCurrentLoad(){
+  var card = document.getElementById('student-training-load');
+  if(!card || !currentUser || !currentId) return;
+  var workout = getWorkoutForUser(currentUser, currentId);
+  var summary = trainingLoadSummary(workout, readWorkoutProgress(currentId).items);
+  card.innerHTML = '<h3>Тоннаж тренировки</h3><strong class="load-total">' +
+    trainingLoadValue(summary) + '</strong><p class="load-coverage">' + trainingLoadCoverage(summary) + '</p>' +
+    summary.exercises.map(function(exercise){
+      return '<div class="load-row"><span>' + esc(exercise.name) + '</span><b>' +
+        formatTrainingLoad(exercise.kg) + '</b></div>';
+    }).join('');
 }
 function renderOverview(){
   var grid = document.getElementById('overview-grid'); if(!grid) return;
@@ -4164,6 +4256,13 @@ function renderAnalytics(){
     '<div class="analytics-stat"><div class="as-num" style="color:#b8730a;">' + inProgress + '</div><div class="as-label">В процессе</div></div>' +
     '<div class="analytics-stat"><div class="as-num" style="color:var(--text-muted);">' + notStarted + '</div><div class="as-label">Не начато</div></div>' +
     '<div class="analytics-stat"><div class="as-num">' + avgPct + '%</div><div class="as-label">Средний прогресс</div></div></div>';
+  html += '<section class="load-card load-analytics" id="coach-training-load"><h3>Тоннаж спортсмена</h3>' +
+    '<div class="load-periods" role="group" aria-label="Период тоннажа">' +
+    '<button type="button" data-load-period="week">Неделя</button>' +
+    '<button type="button" data-load-period="month">Месяц</button>' +
+    '<button type="button" data-load-period="cycle">Цикл</button></div>' +
+    '<label class="load-period-date">Дата в периоде <input type="date"></label>' +
+    '<div class="load-period-result" aria-live="polite"></div></section>';
   html += '<div style="font-size:16px;font-weight:900;margin:20px 0 12px;">Детализация по дням</div>';
   WORKOUTS.forEach(function(w){
     try{
@@ -4223,12 +4322,89 @@ function renderAnalytics(){
       html += '<div class="analytics-day ' + cls + '">' +
         '<div class="analytics-day-head"><div><div class="analytics-day-title">' + esc(w.title) + '</div><div class="analytics-day-date">Неделя ' + w.week + ' · ' + esc(w.day) + ' · ' + esc(w.date) + ' · ' + esc(w.weekday) + '</div></div><div class="analytics-day-status ' + statusCls + '">' + statusText + '</div></div>' +
         (meta ? '<div class="analytics-day-meta">' + meta + '</div>' : '') +
+        (data[w.id] ? renderCoachDayLoad(user, w, data[w.id]) : '') +
         commentHtml +
         setEditRowsHtml +
         detailsHtml + '</div>';
     }catch(e){ console.error('analytics day:', e); }
   });
   container.innerHTML = html;
+  bindCoachTrainingLoad(container.querySelector('#coach-training-load'), user, data);
+}
+function renderCoachDayLoad(user, workout, entry){
+  var day = getWorkoutForUser(user, workout.id) || workout;
+  var summary = trainingLoadSummary(day, entry.items);
+  if(!summary.counted && !summary.unknown) return '';
+  return '<div class="load-day-detail"><b>Тоннаж: ' + trainingLoadValue(summary) +
+    '</b><span>' + trainingLoadCoverage(summary) + '</span></div>';
+}
+function trainingLoadDate(ts){
+  var date = new Date(ts);
+  return date.getFullYear() + '-' + String(date.getMonth()+1).padStart(2,'0') + '-' + String(date.getDate()).padStart(2,'0');
+}
+function trainingLoadPeriod(mode, day){
+  var date = new Date(day + 'T00:00:00');
+  if(isNaN(date.getTime())) date = new Date();
+  date.setHours(0,0,0,0);
+  if(mode === 'cycle') return function(){ return true; };
+  if(mode === 'week') date.setDate(date.getDate() - (date.getDay() + 6) % 7);
+  else date.setDate(1);
+  var end = new Date(date);
+  if(mode === 'week') end.setDate(end.getDate() + 7);
+  else end.setMonth(end.getMonth() + 1);
+  return function(ts){ return Number.isFinite(ts) && ts >= +date && ts < +end; };
+}
+function bindCoachTrainingLoad(card, user, data){
+  var mode = 'week';
+  var picker = card.querySelector('input');
+  var buttons = card.querySelectorAll('[data-load-period]');
+  var result = card.querySelector('.load-period-result');
+  var latest = 0, undated = 0;
+  Object.values(data).forEach(function(entry){
+    Object.values(entry.items || {}).forEach(function(item){
+      if(!item || !Array.isArray(item.sets)) return;
+      new Set(item.sets).forEach(function(index){
+        var ts = item.loads && item.loads[index] && item.loads[index].performedAt;
+        if(Number.isFinite(ts) && ts > 0) latest = Math.max(latest, ts);
+        else undated++;
+      });
+    });
+  });
+  picker.value = trainingLoadDate(latest || Date.now());
+  function render(){
+    var matches = trainingLoadPeriod(mode, picker.value);
+    var rows = [];
+    var total = {kg:0, counted:0, unknown:0};
+    WORKOUTS.forEach(function(workout){
+      var entry = data[workout.id];
+      if(!entry) return;
+      var day = getWorkoutForUser(user, workout.id) || workout;
+      var summary = trainingLoadSummary(day, entry.items, matches);
+      if(!summary.counted && !summary.unknown) return;
+      rows.push({title:day.title || 'Тренировка', date:day.date || '', summary:summary});
+      total.kg += summary.kg;
+      total.counted += summary.counted;
+      total.unknown += summary.unknown;
+    });
+    var max = Math.max(1, ...rows.map(function(row){ return row.summary.kg; }));
+    buttons.forEach(function(button){ button.setAttribute('aria-pressed', String(button.dataset.loadPeriod === mode)); });
+    picker.parentElement.hidden = mode === 'cycle';
+    var message = !rows.length ? '<p>За этот период нет подходов с датой выполнения.</p>' : '';
+    if(mode !== 'cycle' && undated) message += '<p class="load-coverage">Без даты выполнения в цикле: ' + undated + '</p>';
+    result.innerHTML = '<strong class="load-total">' + trainingLoadValue(total) +
+      '</strong><p class="load-coverage">' + trainingLoadCoverage(total) + '</p>' + message +
+      rows.map(function(row){
+        return '<div class="load-chart-row"><div class="load-row"><span>' + esc(row.title) +
+          (row.date ? ' · ' + esc(row.date) : '') + '</span><b>' + trainingLoadValue(row.summary) +
+          '</b></div><div class="load-track" aria-hidden="true"><div style="width:' +
+          (100 * row.summary.kg / max) + '%"></div></div></div>';
+      }).join('');
+  }
+  buttons.forEach(function(button){
+    button.addEventListener('click', function(){ mode = button.dataset.loadPeriod; render(); });
+  });
+  picker.addEventListener('change', render);
+  render();
 }
 async function adminPullAnalyticsCloud(){
   var status = document.getElementById('analytics-cloud-status');
