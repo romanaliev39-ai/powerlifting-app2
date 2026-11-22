@@ -267,6 +267,11 @@
     content.querySelector('h3')?.focus();
   }
 
+  const dialog = document.getElementById('training-tools-dialog');
+  document.getElementById('training-tools-close').addEventListener('click', () => {
+    dialog.close();
+  });
+
   document.addEventListener('click', event => {
     const button = event.target.closest('[data-training-tools]');
     if (!button) return;
