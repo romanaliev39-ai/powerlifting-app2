@@ -2245,7 +2245,7 @@ async function studentPushProgress(explicit){
       if(prog){
         try{
           var p = JSON.parse(prog);
-          if(p.items){ entry = entry || {}; entry.items = p.items; if(p.savedAt) entry.savedAt = p.savedAt; }
+          if(p.items){ entry = entry || {}; entry.items = p.items; if(p.savedAt){ entry.savedAt = p.savedAt; entry.progressAt = p.savedAt; } }
         }catch(e){}
       }
       var adj = localStorage.getItem(base + 'adjust_' + w.id);
@@ -3148,7 +3148,7 @@ function isRecordedTrainingLoad(load){
   return load && Number.isFinite(load.kg) && load.kg >= 0 && Number.isInteger(load.reps) && load.reps > 0;
 }
 function trainingLoadSummary(workout, items, withinPeriod){
-  var summary = {kg:0, counted:0, unknown:0, exercises:[]};
+  var summary = {kg:0, counted:0, unknown:0, estimated:0, exercises:[]};
   if(!workout || !items) return summary;
   var names = new Map();
   (workout.blocks || []).forEach(function(block){
@@ -3167,6 +3167,7 @@ function trainingLoadSummary(workout, items, withinPeriod){
       }
       kg += load.kg * load.reps;
       counted++;
+      if(load.estimated) summary.estimated++;
     });
     if(counted) summary.exercises.push({name:names.get(id) || 'Сохранённое упражнение', kg:kg});
     summary.kg += kg;
@@ -3175,7 +3176,8 @@ function trainingLoadSummary(workout, items, withinPeriod){
   return summary;
 }
 function trainingLoadCoverage(summary){
-  return 'Учтено подходов: ' + summary.counted + (summary.unknown ? ' · Без данных: ' + summary.unknown : '');
+  return 'Учтено подходов: ' + summary.counted + (summary.estimated ? ' · Расчётных: ' + summary.estimated : '') +
+    (summary.unknown ? ' · Без данных: ' + summary.unknown : '');
 }
 function trainingLoadValue(summary){
   return !summary.counted && summary.unknown ? '—' : formatTrainingLoad(summary.kg);
@@ -4026,11 +4028,11 @@ function getAthleteData(pin){
   WORKOUTS.forEach(function(w){
     try{
       var base = 'pl_' + pin + '_';
-      var localItems = null, localAdjust = 0, localComment = null, localSavedAt = 0, hasLocal = false;
+      var localItems = null, localAdjust = 0, localComment = null, localSavedAt = 0, localProgressAt = 0, hasLocal = false;
       var localSetEdits = {};
       var prog = localStorage.getItem(base + 'progress_' + w.id);
       if(prog){
-        try{ var p = JSON.parse(prog); if(p.items){ localItems = p.items; localSavedAt = Math.max(localSavedAt, p.savedAt || 0); hasLocal = true; } }catch(e){}
+        try{ var p = JSON.parse(prog); if(p.items || p.sets || p.acc){ localItems = p.items || migrateOldProgress(p, w.id).items; localProgressAt = p.savedAt || 0; localSavedAt = Math.max(localSavedAt, localProgressAt); hasLocal = true; } }catch(e){}
       }
       var adj = localStorage.getItem(base + 'adjust_' + w.id);
       if(adj){ var n = parseInt(adj); if(n > 0){ localAdjust = n; hasLocal = true; } }
@@ -4058,7 +4060,26 @@ function getAthleteData(pin){
           source = {items: cloudEntry.items || null, adjust: cloudEntry.adjust || 0, comment: cloudEntry.comment || null, setEdits: cloudEntry.setEdits || {}, savedAt: cloudSaved};
         }
       }
-      if(source) data[w.id] = source;
+      if(source){
+        var cloudItems = cloudEntry && cloudEntry.items;
+        if(!cloudItems && cloudEntry && (cloudEntry.sets || cloudEntry.acc)){
+          cloudItems = migrateOldProgress(cloudEntry, w.id).items;
+        }
+        var cloudProgressAt = cloudEntry && (cloudEntry.progressAt || cloudEntry.savedAt) || 0;
+        if(cloudItems && (!localItems || !Object.keys(localItems).length || cloudProgressAt > localProgressAt)){
+          source.items = cloudItems;
+          source.progressAt = cloudProgressAt;
+          source.loadEdits = cloudEntry.setEdits || {};
+          source.loadAdjust = cloudEntry.adjust || 0;
+        }else if(localItems){
+          source.items = localItems;
+          source.progressAt = localProgressAt;
+          source.loadEdits = localSetEdits;
+          source.loadAdjust = localAdjust;
+          source.localLoad = true;
+        }
+        data[w.id] = source;
+      }
     }catch(e){}
   });
   return data;
@@ -4331,9 +4352,50 @@ function renderAnalytics(){
   container.innerHTML = html;
   bindCoachTrainingLoad(container.querySelector('#coach-training-load'), user, data);
 }
+function coachTrainingLoadItems(user, workout, entry, submittedAt){
+  var catalog = new Map();
+  (workout.blocks || []).forEach(function(block){
+    (block.items || []).forEach(function(item){ catalog.set(String(item.id), item); });
+  });
+  var rm = user;
+  if(entry.localLoad){
+    try{ rm = Object.assign({}, user, JSON.parse(localStorage.getItem('pl_' + user.pin + '_rm'))); }catch(e){}
+  }
+  var reportTime = Number(entry.progressAt || entry.savedAt || submittedAt || 0);
+  return Object.fromEntries(Object.entries(entry.items || {}).map(function(pair){
+    var id = pair[0], item = pair[1];
+    if(!item || !Array.isArray(item.sets)) return pair;
+    var plan = catalog.get(id);
+    var edits = (entry.loadEdits || entry.setEdits || {})[id] || {};
+    var adjustment = Number(entry.loadAdjust ?? entry.adjust) || 0;
+    if(entry.localLoad){
+      try{
+        var local = localStorage.getItem('pl_' + user.pin + '_adjust_' + workout.id + '_' + id);
+        if(local !== null) adjustment = Number(local) || 0;
+      }catch(e){}
+    }
+    adjustment = Math.max(0, Math.min(10, adjustment));
+    var loads = Object.assign({}, item.loads);
+    new Set(item.sets).forEach(function(index){
+      if(loads[index]) return;
+      var set = plan && plan.sets && plan.sets[index];
+      var edit = edits[index] || {};
+      var rawReps = edit.reps ?? (set && set.reps);
+      var reps = /^\d+$/.test(String(rawReps ?? '').trim()) ? Number(rawReps) : null;
+      var kg = edit.kg != null && edit.kg !== '' ? Number(edit.kg) : null;
+      if(kg === null && plan && Number(rm[plan.lift]) > 0){
+        var percent = edit.pct != null ? Number(edit.pct) :
+          set && !set.pctMax ? Math.round(Number(set.pct) * (1 - adjustment / 100) * 2) / 2 : NaN;
+        if(Number.isFinite(percent) && percent > 0) kg = Math.round(Number(rm[plan.lift]) * percent / 50) / 2;
+      }
+      loads[index] = {kg:kg, reps:reps, performedAt:reportTime > 0 ? reportTime : null, estimated:true};
+    });
+    return [id, Object.assign({}, item, {loads:loads})];
+  }));
+}
 function renderCoachDayLoad(user, workout, entry){
   var day = getWorkoutForUser(user, workout.id) || workout;
-  var summary = trainingLoadSummary(day, entry.items);
+  var summary = trainingLoadSummary(day, coachTrainingLoadItems(user, day, entry, CLOUD_SUBMISSIONS[user.pin]?.ts));
   if(!summary.counted && !summary.unknown) return '';
   return '<div class="load-day-detail"><b>Тоннаж: ' + trainingLoadValue(summary) +
     '</b><span>' + trainingLoadCoverage(summary) + '</span></div>';
@@ -4360,8 +4422,12 @@ function bindCoachTrainingLoad(card, user, data){
   var buttons = card.querySelectorAll('[data-load-period]');
   var result = card.querySelector('.load-period-result');
   var latest = 0, undated = 0;
-  Object.values(data).forEach(function(entry){
-    Object.values(entry.items || {}).forEach(function(item){
+  var trainingRows = WORKOUTS.filter(function(workout){ return data[workout.id]; }).map(function(workout){
+    var day = getWorkoutForUser(user, workout.id) || workout;
+    return {day:day, items:coachTrainingLoadItems(user, day, data[workout.id], CLOUD_SUBMISSIONS[user.pin]?.ts)};
+  });
+  trainingRows.forEach(function(row){
+    Object.values(row.items).forEach(function(item){
       if(!item || !Array.isArray(item.sets)) return;
       new Set(item.sets).forEach(function(index){
         var ts = item.loads && item.loads[index] && item.loads[index].performedAt;
@@ -4374,22 +4440,22 @@ function bindCoachTrainingLoad(card, user, data){
   function render(){
     var matches = trainingLoadPeriod(mode, picker.value);
     var rows = [];
-    var total = {kg:0, counted:0, unknown:0};
-    WORKOUTS.forEach(function(workout){
-      var entry = data[workout.id];
-      if(!entry) return;
-      var day = getWorkoutForUser(user, workout.id) || workout;
-      var summary = trainingLoadSummary(day, entry.items, matches);
+    var total = {kg:0, counted:0, unknown:0, estimated:0};
+    trainingRows.forEach(function(row){
+      var day = row.day;
+      var summary = trainingLoadSummary(day, row.items, matches);
       if(!summary.counted && !summary.unknown) return;
       rows.push({title:day.title || 'Тренировка', date:day.date || '', summary:summary});
       total.kg += summary.kg;
       total.counted += summary.counted;
       total.unknown += summary.unknown;
+      total.estimated += summary.estimated;
     });
     var max = Math.max(1, ...rows.map(function(row){ return row.summary.kg; }));
     buttons.forEach(function(button){ button.setAttribute('aria-pressed', String(button.dataset.loadPeriod === mode)); });
     picker.parentElement.hidden = mode === 'cycle';
     var message = !rows.length ? '<p>За этот период нет подходов с датой выполнения.</p>' : '';
+    if(total.estimated) message += '<p class="load-coverage">Для старых отчётов тоннаж оценён по сохранённым правкам или программе и текущему 1ПМ. Для периода используется дата сохранения отчёта.</p>';
     if(mode !== 'cycle' && undated) message += '<p class="load-coverage">Без даты выполнения в цикле: ' + undated + '</p>';
     result.innerHTML = '<strong class="load-total">' + trainingLoadValue(total) +
       '</strong><p class="load-coverage">' + trainingLoadCoverage(total) + '</p>' + message +
