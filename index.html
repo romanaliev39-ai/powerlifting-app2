@@ -415,7 +415,7 @@ h2{font-size:18px;margin:28px 0 14px;padding-left:14px;border-left:4px solid var
     <div class="logo">🏋️</div>
     <h2>Вход в личный кабинет</h2>
     <p>Введите ваш PIN-код, чтобы загрузить<br>свои 1ПМ и тренировки.</p>
-    <input type="tel" id="pin-input" inputmode="numeric" maxlength="6" placeholder="PIN" autocomplete="off" enterkeyhint="go" autocorrect="off" autocapitalize="off" spellcheck="false">
+    <input type="password" id="pin-input" maxlength="128" placeholder="PIN или пароль тренера" autocomplete="off" enterkeyhint="go" autocorrect="off" autocapitalize="off" spellcheck="false">
     <button type="submit" id="login-btn">Войти</button>
     <div class="login-error" id="login-error"></div>
     <div id="login-info"></div>
@@ -690,8 +690,6 @@ h2{font-size:18px;margin:28px 0 14px;padding-left:14px;border-left:4px solid var
         <div style="font-size:15px;font-weight:900;">📨 Кто прислал обратную связь</div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
           <span id="analytics-submissions-summary" style="font-size:12px;color:var(--text-muted);font-weight:700;"></span>
-          <label for="analytics-access-code">Код облачной аналитики</label>
-          <input id="analytics-access-code" type="password" autocomplete="off" spellcheck="false">
           <button class="admin-cloud-btn" onclick="adminPullAnalyticsCloud()" style="font-size:12px;padding:7px 12px;margin:0;">⬇️ Обновить из облака</button>
           <span id="analytics-cloud-status" role="status" aria-live="polite"></span>
         </div>
@@ -2154,16 +2152,14 @@ async function fetchCloudData(){
     return { ok: false, error: m };
   }
 }
-var analyticsAccessCode = '';
 async function fetchCloudProgressOnly(){
-  if(!analyticsAccessCode) return {ok: false, error: 'Введите код доступа к облачной аналитике'};
   try{
-    var payload = await requestStudentProgress('list', analyticsAccessCode);
+    var payload = await requestStudentProgress('list');
+    if(!isAdmin) return {ok: false, error: 'Войдите в админку, чтобы загрузить отзывы'};
     CLOUD_PROGRESS = payload.progress || {};
     CLOUD_SUBMISSIONS = payload.submissions || {};
     return {ok: true};
   }catch(err){
-    if(err.status === 403) analyticsAccessCode = '';
     return {ok: false, error: err.message};
   }
 }
@@ -2297,7 +2293,6 @@ async function studentPullCloud(){
 function tryLogin(pin){
   var p = normalizeDigits(pin).replace(/[^0-9]/g, '').trim();
   if(!p) return false;
-  if(p === '6699'){ adminLogin(); return true; }
   var u = USERS.find(function(x){ return normalizeDigits(x.pin).replace(/[^0-9]/g, '') === p; });
   if(!u) return false;
   loginUser(u);
@@ -2375,9 +2370,11 @@ function updateCloudStatus(){
   el.innerHTML = '<span class="ok">✅ Bin ID:</span> ' + CLOUD_BIN_ID.slice(0,10) + '...<br><span class="' + (CLOUD_MASTER_KEY ? 'ok' : 'err') + '">' + (CLOUD_MASTER_KEY ? '✅ Master Key указан' : '⚠️ Master Key отсутствует') + '</span>' + s;
 }
 function logout(){
-  analyticsAccessCode = '';
-  var analyticsCodeField = document.getElementById('analytics-access-code');
-  if(analyticsCodeField) analyticsCodeField.value = '';
+  if(isAdmin){
+    CLOUD_PROGRESS = {};
+    CLOUD_SUBMISSIONS = {};
+    requestStudentProgress('trainer-logout').catch(function(){});
+  }
   var analyticsStatus = document.getElementById('analytics-cloud-status');
   if(analyticsStatus) analyticsStatus.textContent = '';
   if(currentUser && !isAdmin){
@@ -2440,21 +2437,27 @@ function initLogin(){
   async function attempt(){
     if(submitting) return;
     submitting = true;
-    setTimeout(function(){ submitting = false; }, 900);
+    btn.disabled = true;
     if(errEl){ errEl.style.color = '#e74c3c'; errEl.textContent = ''; }
     try{
-      var v = normalizeDigits(pinInput.value).replace(/[^0-9]/g, '').trim();
-      if(!v){ if(errEl) errEl.textContent = 'Введите PIN'; pinInput.focus(); return; }
-      if(v === '6699'){ adminLogin(); return; }
-      if(tryLogin(v)) return;
-      if(CLOUD_BIN_ID){
-        if(errEl){ errEl.textContent = 'PIN не найден. Проверяем облако...'; errEl.style.color = '#3498db'; }
-        var ok = await doSync();
-        if(ok && tryLogin(v)) return;
+      var credential = pinInput.value.trim();
+      var v = normalizeDigits(credential);
+      var isStudentPin = /^\d+$/.test(v);
+      if(!credential){ errEl.textContent = 'Введите PIN или пароль тренера'; pinInput.focus(); return; }
+      if(isStudentPin && tryLogin(v)) return;
+      try{
+        await requestStudentProgress('trainer-login', credential);
+        pinInput.value = '';
+        adminLogin();
+        return;
+      }catch(err){
+        if(err.status !== 401 && !isStudentPin) throw err;
+        if(isStudentPin && CLOUD_BIN_ID && await doSync() && tryLogin(v)) return;
+        if(err.status !== 401) throw err;
       }
       if(errEl){
         errEl.style.color = '#e74c3c';
-        errEl.innerHTML = (!USERS.length) ? 'Данные не загружены. Нажмите «🔄 Синхронизировать» ниже.' : 'PIN не найден среди <b>' + USERS.length + '</b> учеников.';
+        errEl.textContent = 'Неверный PIN или пароль.';
       }
       if(syncBtn) syncBtn.style.display = 'inline-block';
       pinInput.value = '';
@@ -2462,16 +2465,15 @@ function initLogin(){
     }catch(err){
       console.error('login attempt error:', err);
       if(errEl){ errEl.style.color = '#c0392b'; errEl.textContent = 'Ошибка входа: ' + ((err && err.message) ? err.message : err); }
+    }finally{
+      submitting = false;
+      btn.disabled = false;
     }
   }
   form.addEventListener('submit', function(e){ e.preventDefault(); attempt(); });
   pinInput.addEventListener('keydown', function(e){ if(e.key === 'Enter'){ e.preventDefault(); attempt(); } });
   btn.addEventListener('click', function(e){ e.preventDefault(); attempt(); });
    if(syncBtn) syncBtn.addEventListener('click', doSync);
-  pinInput.addEventListener('input', function(){
-    var c = normalizeDigits(pinInput.value).replace(/[^0-9]/g, '');
-    if(c !== pinInput.value) pinInput.value = c;
-  });
   setTimeout(function(){ pinInput.focus(); }, 300);
   updateInfo();
   if(CLOUD_BIN_ID){ fetchCloudData().then(function(r){ if(r && r.ok) updateInfo(); }).catch(function(){}); }
@@ -3126,9 +3128,7 @@ document.querySelectorAll('.admin-tab').forEach(function(tab){
       if(tab.dataset.adminTab === 'workouts') renderAdminWorkouts();
       if(tab.dataset.adminTab === 'analytics'){
         renderAnalytics();
-        if(analyticsAccessCode){
-          fetchCloudProgressOnly().then(function(r){ if(r.ok) renderAnalytics(); }).catch(function(){});
-        }
+        adminPullAnalyticsCloud();
       }
     }catch(e){ console.error('admin tab:', e); }
   });
@@ -4163,18 +4163,11 @@ function renderAnalytics(){
   container.innerHTML = html;
 }
 async function adminPullAnalyticsCloud(){
-  var field = document.getElementById('analytics-access-code');
   var status = document.getElementById('analytics-cloud-status');
-  analyticsAccessCode = field.value.trim() || analyticsAccessCode;
-  if(!analyticsAccessCode){
-    status.textContent = 'Введите код доступа к облачной аналитике.';
-    field.focus();
-    return;
-  }
   status.textContent = 'Загружаем отзывы из облака…';
   var result = await fetchCloudProgressOnly();
+  if(!isAdmin) return;
   if(result.ok){
-    field.value = '';
     status.textContent = 'Отзывы обновлены из облака.';
     renderAnalytics();
     updateCloudStatus();
@@ -4194,7 +4187,16 @@ async function adminPullAnalyticsCloud(){
     try{ savedPin = localStorage.getItem('pl_current_user'); }catch(e){}
     if(!wasOut && savedPin){
       try{
-        if(savedPin === 'ADMIN'){ adminLogin(); }
+        if(savedPin === 'ADMIN'){
+          requestStudentProgress('trainer-session').then(function(){
+            if(localStorage.getItem('pl_current_user') === 'ADMIN' &&
+              sessionStorage.getItem('pl_logged_out') !== '1') adminLogin();
+          }).catch(function(err){
+            if(err.status === 401 && localStorage.getItem('pl_current_user') === 'ADMIN'){
+              localStorage.removeItem('pl_current_user');
+            }
+          });
+        }
         else{ var u = USERS.find(function(x){ return String(x.pin) === String(savedPin); }); if(u) loginUser(u); }
       }catch(err){
         console.error('auto-login failed, falling back to login screen:', err);

@@ -1,5 +1,5 @@
 import { getStore } from '@netlify/blobs';
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 
 function normalizePin(value) {
   return String(value ?? '').replace(/[^0-9]/g, '');
@@ -11,8 +11,34 @@ function samePin(provided, expected) {
   return timingSafeEqual(digest(provided), digest(expected));
 }
 
-function response(value, status = 200) {
-  return Response.json(value, { status, headers: { 'Cache-Control': 'no-store' } });
+const sessionCookie = '__Host-powerlifting-trainer';
+const sessionSeconds = 8 * 60 * 60;
+
+function response(value, status = 200, cookie) {
+  const headers = { 'Cache-Control': 'no-store' };
+  if (cookie) headers['Set-Cookie'] = cookie;
+  return Response.json(value, { status, headers });
+}
+
+function trainerCookie(value, seconds) {
+  return sessionCookie + '=' + value + '; Max-Age=' + seconds +
+    '; Path=/; HttpOnly; Secure; SameSite=Strict';
+}
+
+function signSession(expires, secret) {
+  return createHmac('sha256', secret).update('powerlifting:trainer:' + expires).digest('base64url');
+}
+
+function hasTrainerSession(request, secret) {
+  if (!secret) return false;
+  const cookie = (request.headers.get('cookie') || '').split(';')
+    .map(value => value.trim()).find(value => value.startsWith(sessionCookie + '='));
+  if (!cookie) return false;
+  const [expires, signature] = cookie.slice(sessionCookie.length + 1).split('.');
+  const now = Math.floor(Date.now() / 1000);
+  return /^\d{10}$/.test(expires) && Number(expires) > now &&
+    Number(expires) <= now + sessionSeconds &&
+    samePin(signature, signSession(expires, secret));
 }
 
 function object(value) {
@@ -56,6 +82,8 @@ function summarize(progress) {
 export function createHandler({ openStore, readLegacy, adminPin }) {
   return async function handler(request) {
     if (request.method !== 'POST') return response({ error: 'Метод не поддерживается' }, 405);
+    const origin = request.headers.get('origin');
+    if (origin && origin !== new URL(request.url).origin) return response({ error: 'Запрос отклонён' }, 403);
     let body;
     try {
       const text = await request.text();
@@ -66,11 +94,21 @@ export function createHandler({ openStore, readLegacy, adminPin }) {
     }
     const { action, pin: provided, progress, stats } = object(body);
     const pin = normalizePin(provided);
-    if (action === 'list' && !adminPin) {
-      return response({ error: 'Код облачной аналитики не настроен в Netlify' }, 503);
+    if (action === 'trainer-login') {
+      if (!adminPin) return response({ error: 'Вход тренера не настроен в Netlify' }, 503);
+      if (!samePin(String(provided ?? ''), adminPin)) {
+        return response({ error: 'Неверный PIN или пароль' }, 401);
+      }
+      const expires = Math.floor(Date.now() / 1000) + sessionSeconds;
+      return response({ ok: true }, 200,
+        trainerCookie(expires + '.' + signSession(expires, adminPin), sessionSeconds));
     }
-    if (action === 'list' && !samePin(String(provided ?? '').trim(), adminPin)) {
-      return response({ error: 'Неверный код облачной аналитики' }, 403);
+    if (action === 'trainer-logout') return response({ ok: true }, 200, trainerCookie('', 0));
+    if (action === 'list' || action === 'trainer-session') {
+      if (!hasTrainerSession(request, adminPin)) {
+        return response({ error: 'Войдите в админку, чтобы загрузить отзывы' }, 401);
+      }
+      if (action === 'trainer-session') return response({ ok: true });
     }
     if (!['list','save','stats'].includes(action)) return response({ error: 'Неизвестное действие' }, 400);
     let stage = 'legacy-read';
@@ -142,5 +180,5 @@ async function readLegacy() {
 export default createHandler({
   openStore: () => getStore({ name: 'student-progress', consistency: 'strong' }),
   readLegacy,
-  adminPin: process.env.POWERLIFTING_ADMIN_PIN,
+  adminPin: process.env.POWERLIFTING_ADMIN_PIN?.trim(),
 });
