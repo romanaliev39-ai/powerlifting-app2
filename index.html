@@ -2202,6 +2202,15 @@ async function studentPushProgress(explicit){
   if(explicit) showToast('Отправка...', 'info');
   try{ if(!isAdmin) bumpStat('pushes'); }catch(e){}
   try{
+    if(explicit && currentId){
+      var field = document.getElementById('workout-comment');
+      if(field && field.value.trim() !== (loadCommentForDay(currentId).text || '')){
+        saveWorkoutComment();
+        showToast('Отправка...', 'info');
+      }
+    }
+    var athleteName = currentUser.name || ('PIN ' + myPin);
+    var st = getStats();
     var myProgress = {};
     var rpeCount = 0, commentCount = 0, adjustCount = 0, setEditCount = 0;
     WORKOUTS.forEach(function(w){
@@ -2257,23 +2266,31 @@ async function studentPushProgress(explicit){
         myProgress[w.id] = entry;
       }
     });
-    var existing = {};
-    try{
-      var getRes = await fetch('https://api.jsonbin.io/v3/b/' + CLOUD_BIN_ID + '/latest?t=' + Date.now(), {headers: {'X-Bin-Meta': 'false'}, cache: 'no-store'});
-      if(getRes.ok){ var raw = await getRes.json(); existing = raw.record || raw || {}; }
-    }catch(e){}
-    var payload = {
+    var url = 'https://api.jsonbin.io/v3/b/' + CLOUD_BIN_ID;
+    async function readLatest(){
+      var response = await fetch(url + '/latest?t=' + Date.now(), {
+        headers: {'X-Bin-Meta': 'false'}, cache: 'no-store'
+      });
+      if(!response.ok) throw new Error('Не удалось прочитать облако (HTTP ' + response.status + ')');
+      var raw = await response.json();
+      var record = raw && (raw.record || raw);
+      if(!record || typeof record !== 'object' || Array.isArray(record)){
+        throw new Error('Облако вернуло некорректные данные');
+      }
+      return record;
+    }
+    var existing = await readLatest();
+    var payload = Object.assign({}, existing, {
       users: (existing.users && existing.users.length) ? existing.users : USERS,
       workouts: (existing.workouts && existing.workouts.length) ? existing.workouts : WORKOUTS,
       progress: existing.progress || {},
       submissions: existing.submissions || {}
-    };
-    if(typeof payload.progress !== 'object' || Array.isArray(payload.progress)) payload.progress = {};
-    if(typeof payload.submissions !== 'object' || Array.isArray(payload.submissions)) payload.submissions = {};
+    });
+    if(!payload.progress || typeof payload.progress !== 'object' || Array.isArray(payload.progress)) payload.progress = {};
+    if(!payload.submissions || typeof payload.submissions !== 'object' || Array.isArray(payload.submissions)) payload.submissions = {};
     payload.progress[myPin] = myProgress;
-    var st = getStats();
     payload.submissions[myPin] = {
-      name: (currentUser ? currentUser.name : ('PIN ' + myPin)),
+      name: athleteName,
       ts: Date.now(),
       daysCount: Object.keys(myProgress).length,
       rpeCount: rpeCount,
@@ -2288,11 +2305,37 @@ async function studentPushProgress(explicit){
         lastSeen: st.lastSeen || Date.now()
       }
     };
-    var res = await fetch('https://api.jsonbin.io/v3/b/' + CLOUD_BIN_ID, {method: 'PUT', headers: {'Content-Type': 'application/json', 'X-Master-Key': CLOUD_MASTER_KEY}, body: JSON.stringify(payload)});
-    if(!res.ok){ if(explicit) showToast('Ошибка: ' + res.status, 'error'); return false; }
+    var res = await fetch(url, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json', 'X-Master-Key': CLOUD_MASTER_KEY},
+      body: JSON.stringify(payload)
+    });
+    if(!res.ok){
+      var detail = '';
+      try{
+        var errorBody = await res.json();
+        if(typeof errorBody.message === 'string'){
+          detail = errorBody.message.split(CLOUD_MASTER_KEY).join('[скрыто]').slice(0, 250);
+        }
+      }catch(e){}
+      var confirmed;
+      try{ confirmed = await readLatest(); }catch(e){}
+      var cloudProgress = confirmed && confirmed.progress && confirmed.progress[myPin];
+      if(cloudProgress && JSON.stringify(cloudProgress) === JSON.stringify(myProgress)){
+        CLOUD_PROGRESS = confirmed.progress;
+        CLOUD_SUBMISSIONS = confirmed.submissions || {};
+        if(explicit) showToast('✅ Данные уже у тренера');
+        return true;
+      }
+      if(explicit){
+        showToast('Отправка не подтверждена (HTTP ' + res.status + ')' +
+          (detail ? ': ' + detail : '') + '. Отзыв сохранён на устройстве.', 'error');
+      }
+      return false;
+    }
     CLOUD_PROGRESS = payload.progress;
     CLOUD_SUBMISSIONS = payload.submissions;
-    try{ st._lastPush = (st.opens||0) + '_' + (st.dayOpens||0); saveStats(st); }catch(e){}
+    try{ if(currentUser && currentUser.pin === myPin){ st._lastPush = (st.opens||0) + '_' + (st.dayOpens||0); saveStats(st); } }catch(e){}
     if(explicit) showToast('✅ Отправлено тренеру');
     return true;
   }catch(err){ if(explicit) showToast('Ошибка: ' + ((err && err.message) || err), 'error'); return false; }
