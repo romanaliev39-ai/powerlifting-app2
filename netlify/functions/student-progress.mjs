@@ -79,7 +79,11 @@ function summarize(progress) {
   };
 }
 
-export function createHandler({ openStore, readLegacy, adminPin }) {
+export function createHandler({ openStore, openProgramStore, readLegacy, adminPin }) {
+  const programKey = 'current';
+  async function readProgram() {
+    return openProgramStore ? openProgramStore().get(programKey, { type: 'json' }) : null;
+  }
   return async function handler(request) {
     if (request.method !== 'POST') return response({ error: 'Метод не поддерживается' }, 405);
     const origin = request.headers.get('origin');
@@ -110,11 +114,36 @@ export function createHandler({ openStore, readLegacy, adminPin }) {
       }
       if (action === 'trainer-session') return response({ ok: true });
     }
+    if (action === 'publish-program' || action === 'read-program') {
+      if (action === 'publish-program' && !hasTrainerSession(request, adminPin)) {
+        return response({ error: 'Войдите в админку, чтобы опубликовать программу' }, 401);
+      }
+      try {
+        if (action === 'publish-program') {
+          const { users, workouts } = body;
+          if (!Array.isArray(users) || !Array.isArray(workouts) || !workouts.length ||
+              users.some(user => !user || !normalizePin(user.pin)) ||
+              workouts.some(workout => !workout || !workout.id || !Array.isArray(workout.blocks))) {
+            return response({ error: 'Проверьте список учеников и тренировок перед публикацией' }, 400);
+          }
+          await openProgramStore().setJSON(programKey, { users, workouts });
+          return response({ ok: true });
+        }
+        const program = await readProgram();
+        if (!program) return response({ error: 'Новая программа ещё не опубликована' }, 404);
+        return response(program);
+      } catch (error) {
+        console.error('training-program', { action, name: error?.name });
+        return response({ error: 'Хранилище программы временно недоступно' }, 503);
+      }
+    }
     if (!['list','save','stats'].includes(action)) return response({ error: 'Неизвестное действие' }, 400);
     let stage = 'legacy-read';
     try {
       const legacy = await readLegacy();
-      const users = legacy.users;
+      stage = 'program-read';
+      const program = await readProgram();
+      const users = program?.users ?? legacy.users;
       if (!Array.isArray(users)) throw new Error('Missing users');
       stage = 'blob-connect';
       const store = openStore();
@@ -179,6 +208,7 @@ async function readLegacy() {
 
 export default createHandler({
   openStore: () => getStore({ name: 'student-progress', consistency: 'strong' }),
+  openProgramStore: () => getStore({ name: 'training-program', consistency: 'strong' }),
   readLegacy,
   adminPin: process.env.POWERLIFTING_ADMIN_PIN?.trim(),
 });
