@@ -981,7 +981,6 @@ try{
 }catch(e){}
 
 const CLOUD_BIN_ID = "6ad3f7d4ffd5d1605374802b";
-const CLOUD_MASTER_KEY = "$2a$10$4sDqFKE5FwAhUaNpmfCkzuiNHYxrgQBxe9UgKvnnsuZLPDTc3rYaK";
 const SEED = window.SEED;
 
 const TYPE_COLORS = {
@@ -2206,10 +2205,16 @@ function userHasOverride(u, id){ return !!(u && u.overrides && u.overrides[id]);
 async function fetchCloudData(){
   if(!CLOUD_BIN_ID) return { ok: false, error: 'CLOUD_BIN_ID не задан' };
   try{
-    var res = await fetch('https://api.jsonbin.io/v3/b/' + CLOUD_BIN_ID + '/latest?t=' + Date.now(), {headers: {'X-Bin-Meta': 'false'}, cache: 'no-store'});
-    if(!res.ok) return { ok: false, error: 'HTTP ' + res.status + ' ' + res.statusText };
-    var raw = await res.json();
-    var payload = raw.record || raw;
+    var payload;
+    try{
+      payload = await requestStudentProgress('read-program');
+    }catch(err){
+      if(err.status !== 404) throw err;
+      var res = await fetch('https://api.jsonbin.io/v3/b/' + CLOUD_BIN_ID + '/latest?t=' + Date.now(), {headers: {'X-Bin-Meta': 'false'}, cache: 'no-store'});
+      if(!res.ok) return { ok: false, error: 'HTTP ' + res.status + ' ' + res.statusText };
+      var raw = await res.json();
+      payload = raw.record || raw;
+    }
     if(!payload.users || !Array.isArray(payload.users)) return { ok: false, error: 'В облаке нет users' };
     if(!payload.workouts || !Array.isArray(payload.workouts)) return { ok: false, error: 'В облаке нет workouts' };
     USERS = payload.users; WORKOUTS = payload.workouts;
@@ -2238,26 +2243,12 @@ async function fetchCloudProgressOnly(){
   }
 }
 async function pushCloudData(){
-  if(!CLOUD_BIN_ID || !CLOUD_MASTER_KEY) return { ok: false, error: 'Ключи не заданы' };
   try{
-    var existingProgress = CLOUD_PROGRESS || {};
-    var existingSubmissions = CLOUD_SUBMISSIONS || {};
-    try{
-      var getRes = await fetch('https://api.jsonbin.io/v3/b/' + CLOUD_BIN_ID + '/latest?t=' + Date.now(), {headers: {'X-Bin-Meta': 'false'}, cache: 'no-store'});
-      if(getRes.ok){
-        var raw = await getRes.json();
-        var ex = raw.record || raw;
-        if(ex.progress && typeof ex.progress === 'object') existingProgress = ex.progress;
-        if(ex.submissions && typeof ex.submissions === 'object') existingSubmissions = ex.submissions;
-      }
-    }catch(e){}
-    var payload = {users: USERS, workouts: WORKOUTS, progress: existingProgress, submissions: existingSubmissions};
-    var res = await fetch('https://api.jsonbin.io/v3/b/' + CLOUD_BIN_ID, {method: 'PUT', headers: {'Content-Type': 'application/json', 'X-Master-Key': CLOUD_MASTER_KEY}, body: JSON.stringify(payload)});
-    if(!res.ok) return { ok: false, error: 'HTTP ' + res.status + ' ' + res.statusText };
-    CLOUD_PROGRESS = existingProgress;
-    CLOUD_SUBMISSIONS = existingSubmissions;
-    return { ok: true };
-  }catch(err){ return { ok: false, error: String((err && err.message) || err) }; }
+    await requestStudentProgress('publish-program', null, {users: USERS, workouts: WORKOUTS});
+    return {ok:true};
+  }catch(err){
+    return {ok:false, error:err.message};
+  }
 }
 
 async function studentPushProgress(explicit){
@@ -2440,7 +2431,7 @@ function updateCloudStatus(){
       s = '<br>🕐 Последняя синхронизация: ' + String(t.getDate()).padStart(2,'0') + '.' + String(t.getMonth()+1).padStart(2,'0') + ' ' + String(t.getHours()).padStart(2,'0') + ':' + String(t.getMinutes()).padStart(2,'0');
     }
   }catch(e){}
-  el.innerHTML = '<span class="ok">✅ Bin ID:</span> ' + CLOUD_BIN_ID.slice(0,10) + '...<br><span class="' + (CLOUD_MASTER_KEY ? 'ok' : 'err') + '">' + (CLOUD_MASTER_KEY ? '✅ Master Key указан' : '⚠️ Master Key отсутствует') + '</span>' + s;
+  el.innerHTML = 'Программа публикуется в Netlify Blobs' + s;
 }
 function logout(){
   if(isAdmin){
@@ -4013,7 +4004,6 @@ function adminUndo(idx){
   showToast('Отменено');
 }
 async function adminPushCloud(){
-  if(!CLOUD_BIN_ID || !CLOUD_MASTER_KEY){ alert('Ключи не заданы'); return; }
   showToast('Отправка...', 'info');
   var r = await pushCloudData();
   if(r.ok){ try{ localStorage.setItem('pl_last_sync', String(Date.now())); }catch(e){} updateCloudStatus(); showToast('Опубликовано!'); }
